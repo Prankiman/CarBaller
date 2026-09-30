@@ -25,6 +25,10 @@ void RLCamera::reset(const SimSnapshot& s) {
     computeBallCam(cs, s, e, t);
     smoothedEye_ = e;
     hasSmoothed_ = true;
+    smoothTarget_ = t;
+    prevWantT_ = t;
+    derivS_ = 0;
+    hasSmoothTarget_ = true;
     eye = e;
     target = t;
 }
@@ -119,6 +123,27 @@ void RLCamera::update(float dt, const CameraSettings& cs, const SimSnapshot& s,
         smoothedEye_ += (wantEye - smoothedEye_) * smoothK(cs.stiffness, dt, 1.5f, 14.0f);
     }
 
+    // ---- one-euro filter on the look-at point.
+    // The ball's resting contact with the car micro-bounces it several times a
+    // second; aiming straight at it wobbled the whole view (the perceived
+    // "car rumble" while dribbling). Low-passing at a fixed low cutoff would
+    // also lag real motion, so the cutoff rises with the target's (smoothed)
+    // speed: chatter keeps the cutoff low, swivels/flicks snap open fast.
+    if (!hasSmoothTarget_) {
+        smoothTarget_ = wantTarget;
+        prevWantT_ = wantTarget;
+        derivS_ = 0;
+        hasSmoothTarget_ = true;
+    } else {
+        const V3 d = wantTarget - smoothTarget_;
+        const float rawDeriv = (wantTarget - prevWantT_).len() / std::max(dt, 1e-4f);
+        prevWantT_ = wantTarget;
+        derivS_ += (rawDeriv - derivS_) * (1.0f - std::exp(-2.0f * (float)M_PI * 3.0f * dt));
+        const float fc = 1.2f + 0.01f * derivS_;          // Hz
+        const float k = 1.0f - std::exp(-2.0f * (float)M_PI * fc * dt);
+        smoothTarget_ += d * k;
+    }
+
     // ---- shake
     shakeTime_ += dt;
     shakeAmp_ *= std::exp(-5.5f * dt);
@@ -129,5 +154,5 @@ void RLCamera::update(float dt, const CameraSettings& cs, const SimSnapshot& s,
         std::sin(shakeTime_ * 53.0f + 3.1f) * shakeAmp_);
 
     eye = smoothedEye_ + shake * 9.0f;
-    target = wantTarget + shake * 3.0f;
+    target = smoothTarget_ + shake * 3.0f;
 }

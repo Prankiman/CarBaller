@@ -47,6 +47,10 @@ struct App {
 
     // boost particle accumulator
     float boostAccum = 0;
+
+    // wall-clock seconds (for debouncing hit feedback)
+    double nowSec = 0;
+    double lastHitFx = -1.0;
 };
 
 std::string findMeshDir() {
@@ -183,7 +187,15 @@ int runApp(int argc, char** argv) {
     }
 
     // ---- ball hit feedback
+    // RocketSim re-fires the hit callback whenever the ball-car contact
+    // manifold re-adds; while the ball rests/bounces on the car that can be
+    // tens of events per second (measured up to ~70/s while settling), which
+    // sparkles, shakes and buzzes continuously during a dribble. Only genuine
+    // hits (notable relative velocity) get feedback, at most ~10/s.
     a.sim.onBallHit = [&a](const BallHitEvent& ev) {
+        const bool fresh = a.lastHitFx < 0 || (a.nowSec - a.lastHitFx) >= 0.1;
+        if (!fresh || ev.strength < 300.0f) return;
+        a.lastHitFx = a.nowSec;
         int q = a.settings.gfx.particleQuality;
         a.particles.spawnImpact(ev.pos, ev.strength, q);
         if (a.settings.cam.shake)
@@ -210,6 +222,7 @@ int runApp(int argc, char** argv) {
         if (dt <= 0) dt = 1.0f / 60.0f;
         if (dt > 0.0001f)
             fpsSmoothed = fpsSmoothed * 0.92f + (1.0f / dt) * 0.08f;
+        a.nowSec += dt;
 
         // ---------------- events
         SDL_Event ev;

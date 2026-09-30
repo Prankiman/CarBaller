@@ -44,6 +44,14 @@ private:
     V3 smoothedEye_{0, 0, 0};
     bool hasSmoothed_ = false;
 
+    // One-euro filtered look-at point: the aim follows a resting/bouncing
+    // ball's contact micro-chatter only weakly (low cutoff), while real fast
+    // motion (swivels, flicks, camera swings) passes through with ~1-3 deg lag.
+    V3 smoothTarget_{0, 0, 0};
+    V3 prevWantT_{0, 0, 0};
+    float derivS_ = 0;          // EMA of target speed (uu/s)
+    bool hasSmoothTarget_ = false;
+
     float shakeAmp_ = 0;
     float shakeTime_ = 0;
 };
