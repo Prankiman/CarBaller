@@ -1,0 +1,271 @@
+#include "renderer.h"
+
+#include <cstdio>
+
+namespace {
+
+const char* LIT_VS = R"(#version 330 core
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNrm;
+layout(location=2) in vec2 aUV;
+layout(location=3) in vec4 aCol;
+uniform mat4 uModel, uView, uProj;
+out vec3 vWorld;
+out vec3 vNrm;
+out vec2 vUV;
+out vec4 vCol;
+void main() {
+    vec4 w = uModel * vec4(aPos, 1.0);
+    vWorld = w.xyz;
+    vNrm = mat3(uModel) * aNrm;
+    vUV = aUV;
+    vCol = aCol;
+    gl_Position = uProj * uView * w;
+}
+)";
+
+const char* LIT_FS = R"(#version 330 core
+in vec3 vWorld;
+in vec3 vNrm;
+in vec2 vUV;
+in vec4 vCol;
+uniform int uMode;      // 0 = arena (world grid), 1 = textured, 2 = plain
+uniform sampler2D uTex;
+uniform vec3 uLightDir; // direction the light travels
+out vec4 frag;
+void main() {
+    vec3 N = normalize(vNrm);
+    if (!gl_FrontFacing) N = -N;
+    vec3 albedo = vCol.rgb;
+    if (uMode == 1) albedo *= texture(uTex, vUV).rgb;
+    if (uMode == 0) {
+        vec2 g = abs(N.z) > 0.7 ? vWorld.xy : (abs(N.x) > 0.7 ? vWorld.zy : vWorld.xz);
+        vec2 f1 = abs(fract(g / 1024.0) - 0.5) * 1024.0;
+        float line1 = 1.0 - smoothstep(2.0, 7.0, min(f1.x, f1.y));
+        albedo = mix(albedo, albedo * 1.85 + 0.03, line1 * 0.62);
+        vec2 f2 = abs(fract(g / 256.0) - 0.5) * 256.0;
+        float line2 = 1.0 - smoothstep(1.0, 3.0, min(f2.x, f2.y));
+        albedo = mix(albedo, albedo * 1.35, line2 * 0.22);
+    }
+    float ndl = max(dot(N, -uLightDir), 0.0);
+    vec3 hemi = mix(vec3(0.70, 0.74, 0.84), vec3(1.05), N.z * 0.5 + 0.5);
+    vec3 light = vec3(0.36) * hemi + vec3(1.0, 0.97, 0.90) * ndl * 0.95;
+    frag = vec4(pow(albedo * light, vec3(1.0/2.2)), vCol.a);
+}
+)";
+
+const char* UNLIT_VS = R"(#version 330 core
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNrm;
+layout(location=2) in vec2 aUV;
+layout(location=3) in vec4 aCol;
+uniform mat4 uModel, uView, uProj;
+out vec2 vUV;
+out vec4 vCol;
+void main() {
+    vec4 w = uModel * vec4(aPos, 1.0);
+    vUV = aUV;
+    vCol = aCol;
+    gl_Position = uProj * uView * w;
+}
+)";
+
+const char* UNLIT_FS = R"(#version 330 core
+in vec2 vUV;
+in vec4 vCol;
+uniform int uTextured;   // 0 = vertex color, 1 = multiply texture, 2 = radial disc
+uniform sampler2D uTex;
+uniform float uAlphaMul;
+out vec4 frag;
+void main() {
+    vec4 c = vCol;
+    if (uTextured == 1) c *= texture(uTex, vUV);
+    if (uTextured == 2) {
+        float r = length(vUV - 0.5) * 2.0;
+        float a = 1.0 - smoothstep(0.30, 1.0, r);
+        c.a *= a * a;
+    }
+    c.rgb = pow(c.rgb, vec3(1.0/2.2));
+    c.a *= uAlphaMul;
+    frag = c;
+}
+)";
+
+const V3 SKY(0.31f, 0.35f, 0.45f);
+const V3 LIGHT_DIR(0.42f, -0.36f, -0.83f);  // light travels downward
+
+}  // namespace
+
+bool Renderer::init(const std::string& meshDir) {
+    bool ok = true;
+    ok &= lit_.compile(LIT_VS, LIT_FS, "lit");
+    ok &= unlit_.compile(UNLIT_VS, UNLIT_FS, "unlit");
+    ok &= assets_.build(meshDir);
+    if (!ok) std::fprintf(stderr, "[renderer] init failed\n");
+    return ok;
+}
+
+void Renderer::shutdown() {
+    assets_.destroy();
+    particleMesh_.destroy();
+    lit_.destroy();
+    unlit_.destroy();
+}
+
+void Renderer::drawLit(const GpuMesh& mesh, const M4& model, int mode) {
+    if (!mesh.valid()) return;
+    lit_.setMat4("uModel", model.m);
+    lit_.setInt("uMode", mode);
+    mesh.draw();
+}
+
+void Renderer::drawUnlit(const GpuMesh& mesh, const M4& model, float alphaMul,
+                         bool additive, bool textured) {
+    if (!mesh.valid()) return;
+    glBlendFunc(GL_SRC_ALPHA, additive ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
+    unlit_.setMat4("uModel", model.m);
+    unlit_.setFloat("uAlphaMul", alphaMul);
+    unlit_.setInt("uTextured", textured ? 1 : 0);
+    mesh.draw();
+}
+
+void Renderer::render(const RLCamera& cam, const RenderParams& p, const ParticleSystem& ps) {
+    w_ = p.width;
+    h_ = p.height;
+    const SimSnapshot& s = *p.snap;
+
+    glViewport(0, 0, w_, h_);
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LEQUAL);
+    glDisable(GL_BLEND);
+    glDepthMask(GL_TRUE);
+    glClearColor(SKY.x, SKY.y, SKY.z, 1);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    float aspect = h_ > 0 ? float(w_) / float(h_) : 1.0f;
+    lastFovX = p.fovX;
+    view_ = M4::viewRL(cam.eye, cam.target);
+    proj_ = M4::perspectiveH(p.fovX, aspect, 10.0f, 30000.0f);
+
+    lit_.use();
+    lit_.setMat4("uView", view_.m);
+    lit_.setMat4("uProj", proj_.m);
+    lit_.setVec3("uLightDir", LIGHT_DIR.x, LIGHT_DIR.y, LIGHT_DIR.z);
+    lit_.setInt("uTex", 0);
+
+    // ---------- opaque
+    drawLit(assets_.arena, M4::identity(), 0);
+
+    // ball
+    {
+        M4 model = M4::fromFrame(s.ballF, s.ballR, s.ballU, s.ballPos);
+        assets_.ballTex.bind(0);
+        drawLit(assets_.ball, model, 1);
+    }
+
+    // car body
+    {
+        M4 model = M4::fromFrame(s.carF, s.carR, s.carU, s.carPos);
+        drawLit(assets_.carBody, model, 2);
+
+        // wheels: front pair steers, all spin with ground speed
+        float signedSpeed = s.carVel.dot(s.carF);
+        float avgR = 13.5f;
+        if (s.onGround) wheelSpin_ += (signedSpeed * p.dt) / avgR;
+        else wheelSpin_ *= std::exp(-1.2f * p.dt);
+        float steerAng = p.steerInput * 0.5f;
+
+        struct W { float x, y, z; bool front; float r; };
+        const W wheels[] = {
+            {51.25f, 25.90f, -4.5f, true, 12.5f},
+            {51.25f, -25.90f, -4.5f, true, 12.5f},
+            {-33.75f, 29.50f, -2.0f, false, 15.0f},
+            {-33.75f, -29.50f, -2.0f, false, 15.0f},
+        };
+        for (const W& w : wheels) {
+            M4 local = M4::translate(V3(w.x, w.y, w.z));
+            if (w.front) local = local * M4::rotateAxis(V3(0, 0, 1), steerAng);
+            local = local * M4::rotateAxis(V3(0, 1, 0), wheelSpin_ / (w.r / avgR));
+            M4 model2 = model * local;
+            drawLit(w.front ? assets_.wheelFront : assets_.wheelBack, model2, 2);
+        }
+    }
+
+    // ---------- transparent
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE);
+
+    unlit_.use();
+    unlit_.setMat4("uView", view_.m);
+    unlit_.setMat4("uProj", proj_.m);
+    unlit_.setInt("uTex", 0);
+
+    drawUnlit(assets_.markings, M4::identity(), 1.0f, false);
+
+    if (p.showShadows) {
+        float carA = clampf(1.0f - s.carPos.z / 500.0f, 0, 1);
+        if (carA > 0.01f) {
+            M4 m = M4::translate(V3(s.carPos.x, s.carPos.y, 3.0f)) *
+                   M4::scale(V3(72, 66, 1));
+            drawUnlit(assets_.shadowDisc, m, carA, false);
+        }
+        float ballA = clampf(1.0f - s.ballPos.z / 700.0f, 0, 1);
+        if (ballA > 0.01f) {
+            M4 m = M4::translate(V3(s.ballPos.x, s.ballPos.y, 3.5f)) *
+                   M4::scale(V3(95, 95, 1));
+            drawUnlit(assets_.shadowDisc, m, ballA, false);
+        }
+    }
+
+    if (p.showBallRing) {
+        M4 m = M4::translate(V3(s.ballPos.x, s.ballPos.y, 4.0f));
+        drawUnlit(assets_.indicator, m, 0.85f, false);
+    }
+
+    // ---------- particles (additive billboards)
+    if (ps.count() > 0) {
+        V3 d = (cam.target - cam.eye).norm();
+        V3 right = headingRight(d);
+        float rl = right.len();
+        if (rl > 1e-5f) right = right / rl; else right = V3(1, 0, 0);
+        V3 back = d * -1.0f;
+        V3 up = right.cross(back);
+
+        static std::vector<Vertex> pv;
+        static std::vector<uint32_t> pi;
+        pv.clear();
+        pi.clear();
+        ps.buildQuads(right, up, pv, pi);
+        if (!pv.empty()) {
+            particleMesh_.upload(pv, pi, /*dynamic=*/true);
+            unlit_.setMat4("uModel", M4::identity().m);
+            unlit_.setFloat("uAlphaMul", 1.0f);
+            unlit_.setInt("uTextured", 2);  // analytic radial disc
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE);  // additive glow
+            particleMesh_.draw();
+        }
+    }
+
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
+}
+
+bool Renderer::project(const V3& world, float& sx, float& sy) const {
+    const float* v = view_.m;
+    const float* m = proj_.m;
+    // view * point (w = 1)
+    float vx = v[0] * world.x + v[4] * world.y + v[8] * world.z + v[12];
+    float vy = v[1] * world.x + v[5] * world.y + v[9] * world.z + v[13];
+    float vz = v[2] * world.x + v[6] * world.y + v[10] * world.z + v[14];
+    // proj * point
+    float cx = m[0] * vx + m[4] * vy + m[8] * vz + m[12];
+    float cy = m[1] * vx + m[5] * vy + m[9] * vz + m[13];
+    float cw = m[3] * vx + m[7] * vy + m[11] * vz + m[15];
+    if (cw <= 1e-4f) return false;
+    float ndcx = cx / cw, ndcy = cy / cw;
+    sx = (ndcx * 0.5f + 0.5f) * w_;
+    sy = (1.0f - (ndcy * 0.5f + 0.5f)) * h_;
+    return true;
+}

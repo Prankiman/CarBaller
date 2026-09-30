@@ -1,0 +1,133 @@
+#include "rl_camera.h"
+
+#include <cmath>
+
+static V3 dirFromYawPitch(float yaw, float pitch) {
+    float cp = std::cos(pitch);
+    return {cp * std::cos(yaw), cp * std::sin(yaw), std::sin(pitch)};
+}
+
+static float smoothK(float stiffness, float dt, float base, float scale) {
+    float k = base + stiffness * scale;
+    return 1.0f - std::exp(-k * dt);
+}
+
+void RLCamera::reset(const SimSnapshot& s) {
+    desired_ = CamMode::Ball;
+    blend_ = 1.0f;
+    yawOff_ = pitchOff_ = 0;
+    carYaw_ = std::atan2(s.carF.y, s.carF.x);
+    hasSmoothed_ = false;
+    shakeAmp_ = 0;
+
+    CameraSettings cs;  // defaults
+    V3 e, t;
+    computeBallCam(cs, s, e, t);
+    smoothedEye_ = e;
+    hasSmoothed_ = true;
+    eye = e;
+    target = t;
+}
+
+void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
+                              V3& outEye, V3& outTarget) {
+    V3 toBall = s.ballPos - s.carPos;
+    float baseYaw;
+    if (toBall.len2d() > 1.0f)
+        baseYaw = std::atan2(toBall.y, toBall.x);
+    else
+        baseYaw = std::atan2(s.carF.y, s.carF.x);
+
+    float lookYaw = baseYaw + yawOff_;
+    V3 fwd(std::cos(lookYaw), std::sin(lookYaw), 0);
+
+    outEye = s.carPos - fwd * cs.distance + V3(0, 0, cs.height);
+
+    V3 toT = s.ballPos - outEye;
+    float basePitch = std::atan2(toT.z, std::max(toT.len2d(), 1.0f));
+    float pitch = clampf(basePitch + cs.angle * (float)M_PI / 180.0f + pitchOff_,
+                         -1.4f, 1.4f);
+
+    V3 dir = dirFromYawPitch(lookYaw, pitch);
+    outTarget = outEye + dir * std::max(toT.len(), 1000.0f);
+}
+
+void RLCamera::computeCarCam(const CameraSettings& cs, const SimSnapshot& s,
+                             float dt, V3& outEye, V3& outTarget) {
+    float desiredYaw = std::atan2(s.carF.y, s.carF.x);
+
+    // Follow rate: instant-ish on the ground, slower in the air, very slow
+    // while flipping so the camera doesn't whip around when the rear moves.
+    bool flipping = s.flipping || (!s.onGround && s.carAngVel.len() > 3.0f);
+    float rate;
+    if (s.onGround)
+        rate = 12.0f;
+    else if (flipping)
+        rate = 1.8f;
+    else
+        rate = 7.0f;
+
+    float delta = wrapAngle(desiredYaw - carYaw_);
+    carYaw_ += clampf(delta, -rate * dt, rate * dt);
+
+    float lookYaw = carYaw_ + yawOff_;
+    V3 fwd(std::cos(lookYaw), std::sin(lookYaw), 0);
+
+    outEye = s.carPos - fwd * cs.distance + V3(0, 0, cs.height);
+
+    V3 aim = s.carPos + V3(0, 0, cs.height * 0.25f);
+    V3 toT = aim - outEye;
+    float basePitch = std::atan2(toT.z, std::max(toT.len2d(), 1.0f));
+    float pitch = clampf(basePitch + cs.angle * (float)M_PI / 180.0f + pitchOff_,
+                         -1.4f, 1.4f);
+
+    V3 dir = dirFromYawPitch(lookYaw, pitch);
+    outTarget = outEye + dir * std::max(toT.len(), 1000.0f);
+}
+
+void RLCamera::update(float dt, const CameraSettings& cs, const SimSnapshot& s,
+                      float swivelX, float swivelY) {
+    // ---- swivel (persistent offsets)
+    float rate = cs.swivelSpeed * 0.7f;  // rad/s at full stick (5 -> 3.5 rad/s)
+    float invert = cs.invertSwivel ? -1.0f : 1.0f;
+    yawOff_ += swivelX * rate * dt;
+    pitchOff_ += swivelY * rate * dt * invert;
+    if (yawOff_ > (float)M_PI) yawOff_ -= 2 * (float)M_PI;
+    if (yawOff_ < -(float)M_PI) yawOff_ += 2 * (float)M_PI;
+    pitchOff_ = clampf(pitchOff_, -0.8f, 0.7f);
+
+    // ---- mode transition
+    float targetBlend = (desired_ == CamMode::Ball) ? 1.0f : 0.0f;
+    float tRate = 0.5f + cs.transitionSpeed * 2.5f;
+    float step = tRate * dt;
+    if (blend_ < targetBlend) blend_ = std::min(targetBlend, blend_ + step);
+    else if (blend_ > targetBlend) blend_ = std::max(targetBlend, blend_ - step);
+
+    // ---- compute both rigs
+    V3 ballEye, ballTarget, carEye, carTarget;
+    computeBallCam(cs, s, ballEye, ballTarget);
+    computeCarCam(cs, s, dt, carEye, carTarget);
+
+    V3 wantEye = V3::lerp(carEye, ballEye, blend_);
+    V3 wantTarget = V3::lerp(carTarget, ballTarget, blend_);
+
+    // ---- stiffness: position follow smoothing
+    if (!hasSmoothed_) {
+        smoothedEye_ = wantEye;
+        hasSmoothed_ = true;
+    } else {
+        smoothedEye_ += (wantEye - smoothedEye_) * smoothK(cs.stiffness, dt, 1.5f, 14.0f);
+    }
+
+    // ---- shake
+    shakeTime_ += dt;
+    shakeAmp_ *= std::exp(-5.5f * dt);
+    if (shakeAmp_ < 0.001f) shakeAmp_ = 0;
+    V3 shake(
+        std::sin(shakeTime_ * 47.0f) * shakeAmp_,
+        std::sin(shakeTime_ * 39.0f + 1.7f) * shakeAmp_,
+        std::sin(shakeTime_ * 53.0f + 3.1f) * shakeAmp_);
+
+    eye = smoothedEye_ + shake * 9.0f;
+    target = wantTarget + shake * 3.0f;
+}
