@@ -233,10 +233,10 @@ void InputSystem::swivel(float& x, float& y) {
     x += value_[int(Action::SwivelRight)] - value_[int(Action::SwivelLeft)];
     y += value_[int(Action::SwivelUp)] - value_[int(Action::SwivelDown)];
 
-    // mouse (consumed)
+    // mouse (consumed); mouseSens 1..100 (RL range), 10 == 0.016 rad/px
     if (settings_ && settings_->cam.mouseSwivel) {
-        x += clampf(mouseDX_, -80, 80) * 0.016f * settings_->cam.mouseSens;
-        y += clampf(-mouseDY_, -80, 80) * 0.016f * settings_->cam.mouseSens;
+        x += clampf(mouseDX_, -80, 80) * 0.0016f * settings_->cam.mouseSens;
+        y += clampf(-mouseDY_, -80, 80) * 0.0016f * settings_->cam.mouseSens;
     }
     mouseDX_ = mouseDY_ = 0;
     x = clampf(x, -1, 1);

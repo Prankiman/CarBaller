@@ -50,31 +50,34 @@ struct Bindings {
 
 // ---------------------------------------------------------------- settings
 
+// Ranges/defaults below mirror Rocket League's settings menus:
+//   camera + deadzone ranges per Liquipedia's Settings article;
+//   distance/stiffness/deadzone defaults per Psyonix patch v1.74 (2020-03-10).
 struct CameraSettings {
-    float fov = 110.0f;            // 90..110 (horizontal), RL default display 110
-    float distance = 270.0f;       // 230..400
-    float height = 100.0f;         // 40..200
-    float angle = -4.0f;           // -15..15 (deg)
-    float stiffness = 0.5f;        // 0..1
-    float swivelSpeed = 5.0f;      // 0..10
-    float transitionSpeed = 1.2f;  // 0..2
-    bool shake = false;
+    float fov = 110.0f;            // 60..110 (RL), horizontal FOV
+    float distance = 270.0f;       // 100..400 (RL; 270 = v1.74 default)
+    float height = 100.0f;         // 40..200 (RL)
+    float angle = -4.0f;           // -45..0 (RL; negative looks down)
+    float stiffness = 0.5f;        // 0..1 (RL; 0.5 = v1.74 default)
+    float swivelSpeed = 5.0f;      // 1..10 (RL)
+    float transitionSpeed = 1.2f;  // 1..2 (RL)
+    bool shake = true;             // RL ships with camera shake ON
     bool invertSwivel = false;
-    bool ballCamToggle = true;     // true=toggle, false=hold
+    bool ballCamToggle = true;     // true=toggle, false=hold ("Hold Ball Camera")
     bool ballCamIndicator = true;
     bool ballArrow = true;         // car->ball arrow while in car cam
     bool ballFloorProjection = true;
     bool mouseSwivel = true;
-    float mouseSens = 1.0f;
+    float mouseSens = 10.0f;       // 1..100 (RL); 10 = our 0.016 rad/px scale
 };
 
 struct ControlSettings {
-    float steerSens = 1.2f;        // 0..2
-    float aerialSens = 1.2f;       // 0..2
-    float deadzone = 0.10f;        // 0..0.7
-    float dodgeDeadzone = 0.70f;   // 0..0.9 -> CarConfig.dodgeDeadzone
+    float steerSens = 1.0f;        // 1..10 (RL; default 1.00)
+    float aerialSens = 1.0f;       // 1..10 (RL; default 1.00)
+    float deadzone = 0.20f;        // 0..0.75 (RL; 0.20 = v1.74 default)
+    float dodgeDeadzone = 0.80f;   // 0.10..1.00 (RL; 0.80 = v1.74 default)
     int deadzoneShape = 0;         // 0 = cross, 1 = circle
-    bool vibration = false;
+    bool vibration = true;         // RL ships with controller vibration ON
     float keyboardSteerSmooth = 0.0f; // 0 = instant digital (RL-like)
 };
 

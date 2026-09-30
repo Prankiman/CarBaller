@@ -89,6 +89,7 @@ int runApp(int argc, char** argv) {
 
     App a;
     a.settings.load("settings.json");
+    if (std::getenv("CARBALLER_START_MENU")) a.menuOpen = true;  // test hook
 
     if (a.settings.gfx.msaa > 0) {
         SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
@@ -185,10 +186,11 @@ int runApp(int argc, char** argv) {
     a.sim.onBallHit = [&a](const BallHitEvent& ev) {
         int q = a.settings.gfx.particleQuality;
         a.particles.spawnImpact(ev.pos, ev.strength, q);
-        a.cam.kickShake(clampf(ev.strength / 6000.0f, 0.05f, 0.9f));
+        if (a.settings.cam.shake)
+            a.cam.kickShake(clampf(ev.strength / 6000.0f, 0.05f, 0.9f));
         if (a.settings.ctrl.vibration) {
             float strong = clampf(ev.strength / 3500.0f, 0.15f, 1.0f);
-            a.input.rumble(uint16_t(strong * 0xFFFF), 0, 140);
+            a.input.rumble(strong, 0.0f, 140);
         }
     };
 
@@ -321,6 +323,19 @@ int runApp(int argc, char** argv) {
 
         SimSnapshot snap = a.sim.snapshot(a.sim.paused ? 1.0f
                                                        : clampf(float(a.sim.accumAlpha()), 0, 1));
+
+        // RL-style gamepad feedback: rumble on boost activation + hard landings
+        // (ball impacts rumble in onBallHit above).
+        if (a.settings.ctrl.vibration && !a.menuOpen) {
+            static bool prevBoost = false, prevGround = true;
+            static float prevVelZ = 0.0f;
+            if (snap.boosting && !prevBoost) a.input.rumble(0.25f, 0.10f, 120);
+            if (snap.onGround && !prevGround && prevVelZ < -700.0f)
+                a.input.rumble(clampf(-prevVelZ / 2500.0f, 0.2f, 0.7f), 0.2f, 120);
+            prevBoost = snap.boosting;
+            prevGround = snap.onGround;
+            prevVelZ = snap.carVel.z;
+        }
 
         if (a.camResetPending) {
             a.cam.reset(snap);

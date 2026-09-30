@@ -71,52 +71,59 @@ void capturePlaceholder() {
 // ------------------------------------------------------------------------
 
 void drawCameraTab(CameraSettings& c, bool& changed) {
-    sliderF("FOV", &c.fov, 90.0f, 110.0f, "%.0f", changed,
-            "Horizontal field of view (Rocket League: 90 - 110).");
-    sliderF("Distance", &c.distance, 230.0f, 400.0f, "%.0f", changed,
-            "How far the camera sits behind the car.");
+    // RL order (Liquipedia/Epic): shake first, then FOV, Height, Angle,
+    // Distance, Stiffness, Swivel Speed, Transition Speed.
+    check("Camera Shake", &c.shake, changed,
+          "Shake the camera on impacts. Rocket League ships with this ON.");
+    check("Invert Swivel", &c.invertSwivel, changed,
+          "Invert the vertical camera swivel direction.");
+
+    sliderF("FOV", &c.fov, 60.0f, 110.0f, "%.0f", changed,
+            "Horizontal field of view. Rocket League: 60 - 110 (default 110).");
     sliderF("Height", &c.height, 40.0f, 200.0f, "%.0f", changed,
-            "How high above the car the camera floats.");
-    sliderF("Angle", &c.angle, -15.0f, 15.0f, "%.0f", changed,
-            "Camera pitch relative to the car (negative looks down).");
+            "How high above the car the camera floats. Rocket League: 40 - 200 (default 100).");
+    sliderF("Angle", &c.angle, -45.0f, 0.0f, "%.0f", changed,
+            "Camera pitch relative to the car; negative looks down. Rocket League: -45 - 0 (default -4).");
+    sliderF("Distance", &c.distance, 100.0f, 400.0f, "%.0f", changed,
+            "How far the camera sits behind the car. Rocket League: 100 - 400 (default 270).");
     sliderF("Stiffness", &c.stiffness, 0.0f, 1.0f, "%.2f", changed,
-            "How rigidly the camera follows the car. Higher = tighter, lower = floatier.");
-    sliderF("Swivel Speed", &c.swivelSpeed, 0.0f, 10.0f, "%.1f", changed,
-            "How fast the camera swivels when you look around (free look / mouse).");
-    sliderF("Transition Speed", &c.transitionSpeed, 0.0f, 2.0f, "%.2f", changed,
-            "How quickly the camera blends between car cam and ball cam.");
+            "How rigidly the camera follows the car. Higher = tighter, lower = floatier. Rocket League: 0 - 1 (default 0.50).");
+    sliderF("Swivel Speed", &c.swivelSpeed, 1.0f, 10.0f, "%.1f", changed,
+            "How fast the camera swivels when you look around. Rocket League: 1 - 10.");
+    sliderF("Transition Speed", &c.transitionSpeed, 1.0f, 2.0f, "%.2f", changed,
+            "How quickly the camera blends between car cam and ball cam. Rocket League: 1 - 2.");
 
     ImGui::SeparatorText("Options");
 
-    check("Camera Shake", &c.shake, changed,
-          "Shake the camera on impacts and landings. Rocket League default: off.");
-    check("Invert Swivel", &c.invertSwivel, changed,
-          "Invert the vertical camera swivel direction.");
-    check("Ball Cam is a Toggle", &c.ballCamToggle, changed,
-          "On: press once to toggle ball cam. Off: hold the button to keep ball cam on.");
+    // RL's wording is "Hold Ball Camera" (checked = hold); we store toggle-first.
+    bool hold = !c.ballCamToggle;
+    check("Hold Ball Camera", &hold, changed,
+          "Rocket League's wording. On: hold the button to keep ball cam on. "
+          "Off (default): press once to toggle ball cam.");
+    c.ballCamToggle = !hold;
     check("Ball Cam Indicator", &c.ballCamIndicator, changed,
           "Show an indicator while ball cam is active.");
-    check("Ball -> Car Arrow", &c.ballArrow, changed,
-          "Draw an arrow pointing at the ball while in car cam.");
+    check("Ball Arrow", &c.ballArrow, changed,
+          "Draw an arrow pointing at the ball while in car cam (Rocket League's 'Ball Arrow').");
     check("Ball Floor Projection", &c.ballFloorProjection, changed,
           "Project the ball's position onto the ground as a shadow/marker.");
     check("Mouse Swivel", &c.mouseSwivel, changed,
           "Let the mouse swivel the camera while the settings menu is closed.");
 
-    sliderF("Mouse Sensitivity", &c.mouseSens, 0.2f, 4.0f, "%.2f", changed,
-            "How much mouse movement swivels the camera.");
+    sliderF("Mouse Sensitivity", &c.mouseSens, 1.0f, 100.0f, "%.0f", changed,
+            "How much mouse movement swivels the camera. Rocket League: 1 - 100.");
 }
 
 void drawControlsTab(ControlSettings& c, bool& changed) {
-    sliderF("Steering Sensitivity", &c.steerSens, 0.0f, 2.0f, "%.2f", changed,
-            "Scales steering input from the stick / arrow keys (Rocket League default 1.20).");
-    sliderF("Aerial Sensitivity", &c.aerialSens, 0.0f, 2.0f, "%.2f", changed,
-            "Scales pitch and yaw input while airborne (Rocket League default 1.20).");
-    sliderF("Deadzone", &c.deadzone, 0.0f, 0.7f, "%.2f", changed,
-            "Stick input inside the deadzone is treated as neutral.");
-    sliderF("Dodge Deadzone", &c.dodgeDeadzone, 0.0f, 0.9f, "%.2f", changed,
-            "Dodge Deadzone controls when a flip is triggered vs. air roll - matches "
-            "Rocket League's setting (applied to the car's dodgeDeadzone)");
+    sliderF("Steering Sensitivity", &c.steerSens, 1.0f, 10.0f, "%.2f", changed,
+            "Scales stick steering input. Rocket League: 1.00 - 10.00 (default 1.00).");
+    sliderF("Aerial Sensitivity", &c.aerialSens, 1.0f, 10.0f, "%.2f", changed,
+            "Scales pitch and yaw stick input while airborne. Rocket League: 1.00 - 10.00 (default 1.00).");
+    sliderF("Controller Deadzone", &c.deadzone, 0.0f, 0.75f, "%.2f", changed,
+            "Stick input inside the deadzone is neutral. Rocket League: 0.00 - 0.75 (default 0.20, patch v1.74).");
+    sliderF("Dodge Deadzone", &c.dodgeDeadzone, 0.10f, 1.0f, "%.2f", changed,
+            "How far the stick must move with jump to dodge instead of double-jumping. "
+            "Rocket League: 0.10 - 1.00 (default 0.80, patch v1.74); applied to the car's dodgeDeadzone.");
 
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Deadzone Shape");
@@ -134,7 +141,8 @@ void drawControlsTab(ControlSettings& c, bool& changed) {
         ImGui::SetTooltip("Cross: square deadzone (axis-by-axis). Circle: radial deadzone.");
 
     check("Controller Vibration", &c.vibration, changed,
-          "Rumble on boost, impacts and landings (requires a gamepad).");
+          "Rumble on boost activation, ball impacts and hard landings (requires a "
+          "gamepad). Rocket League ships with vibration ON.");
 }
 
 void drawFreeplayTab(FreeplaySettings& f, bool& changed) {

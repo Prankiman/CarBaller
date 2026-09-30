@@ -1,5 +1,7 @@
 #include "settings.h"
 
+#include "../core/math.h"
+
 #include <nlohmann/json.hpp>
 #include <fstream>
 
@@ -211,5 +213,24 @@ bool Settings::load(const std::string& path) {
             if (binds.binds.find(a) == binds.binds.end()) binds.binds[a] = def.get(a);
         }
     }
+
+    // Clamp everything to the ranges shown in the settings UI (RL ranges).
+    cam.fov = clampf(cam.fov, 60.0f, 110.0f);
+    cam.distance = clampf(cam.distance, 100.0f, 400.0f);
+    cam.height = clampf(cam.height, 40.0f, 200.0f);
+    cam.angle = clampf(cam.angle, -45.0f, 0.0f);
+    cam.stiffness = clampf(cam.stiffness, 0.0f, 1.0f);
+    cam.swivelSpeed = clampf(cam.swivelSpeed, 1.0f, 10.0f);
+    cam.transitionSpeed = clampf(cam.transitionSpeed, 1.0f, 2.0f);
+    cam.mouseSens = clampf(cam.mouseSens, 1.0f, 100.0f);
+    ctrl.steerSens = clampf(ctrl.steerSens, 1.0f, 10.0f);
+    ctrl.aerialSens = clampf(ctrl.aerialSens, 1.0f, 10.0f);
+    ctrl.deadzone = clampf(ctrl.deadzone, 0.0f, 0.75f);
+    ctrl.dodgeDeadzone = clampf(ctrl.dodgeDeadzone, 0.10f, 1.0f);
+    ctrl.keyboardSteerSmooth = clampf(ctrl.keyboardSteerSmooth, 0.0f, 0.25f);
+    if (ctrl.deadzoneShape != 0 && ctrl.deadzoneShape != 1) ctrl.deadzoneShape = 0;
+    freeplay.launchSpeed = clampf(freeplay.launchSpeed, 1000.0f, 5000.0f);
+    freeplay.launchAngle = clampf(freeplay.launchAngle, 0.0f, 60.0f);
+
     return true;
 }
