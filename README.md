@@ -113,8 +113,3 @@ Psyonix's defaults, and are saved to `settings.json` on exit.
   `tools/fetch_assets.sh`.
 - Developed with [OpenCode](https://opencode.ai/), the open-source coding-agent
   CLI, using the **MiMo v2.6 Flash** model.
-
-## Disclaimer
-
-Unofficial fan project. Not affiliated with, endorsed by, or sponsored by
-Psyonix or Epic Games. Rocket League is a trademark of Psyonix, LLC.
