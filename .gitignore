@@ -17,9 +17,6 @@ compile_commands.json
 settings.json
 imgui.ini
 
-# --- local tooling ---
-opencode_sessions/
-
 # --- editors / OS ---
 .vscode/
 .idea/
