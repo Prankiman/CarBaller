@@ -220,7 +220,10 @@ void InputSystem::update() {
     std::memcpy(prevValue_, value_, sizeof(value_));
 
     Uint32 mouseState = SDL_GetMouseState(nullptr, nullptr);
-    for (int i = 0; i < 8; i++) mouseDown_[i] = (mouseState & SDL_BUTTON(i + 1)) != 0;
+    // Indexed by SDL button number (1=left, 2=middle, 3=right, 4/5=X1/X2) so
+    // it matches BindType::Mouse codes from capture (e.button.button) and
+    // describe(). Index 0 stays unused.
+    for (int b = 1; b < 8; b++) mouseDown_[b] = (mouseState & SDL_BUTTON(b)) != 0;
 
     for (int i = 0; i < int(Action::COUNT_); i++) {
         float v = actionRaw(Action(i));
