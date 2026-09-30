@@ -67,10 +67,17 @@ void InputSystem::handleEvent(const SDL_Event& e) {
     // Capture next input as a binding
     auto finish = [&](Binding b) {
         if (b.type == BindType::PadAxis) {
-            // triggers only: clear duplicates of same axis
+            // same axis+direction only (a stick's opposite direction is a
+            // distinct binding); never compare against the slot being
+            // replaced - that used to abort the capture whenever a trigger
+            // was re-bound to itself, leaving the capture stuck.
             BindList& list = binds_.binds[captureAction_];
-            for (auto& x : list)
-                if (x.type == BindType::PadAxis && x.code == b.code) return;
+            for (int i = 0; i < (int)list.size(); i++) {
+                if (i == captureSlot_) continue;
+                const Binding& x = list[i];
+                if (x.type == BindType::PadAxis && x.code == b.code && x.dir == b.dir)
+                    return;
+            }
         }
         if (captureSlot_ >= 0) {
             BindList& list = binds_.binds[captureAction_];
@@ -100,8 +107,14 @@ void InputSystem::handleEvent(const SDL_Event& e) {
     } else if (e.type == SDL_CONTROLLERAXISMOTION) {
         SDL_GameController* gc = SDL_GameControllerFromInstanceID(e.caxis.which);
         if (!gc || std::find(controllers_.begin(), controllers_.end(), gc) == controllers_.end()) return;
-        if (e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT || e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
-            if (e.caxis.value > 16000) finish({BindType::PadAxis, (int)e.caxis.axis, 1});
+        const int ax = (int)e.caxis.axis;
+        if (ax == SDL_CONTROLLER_AXIS_TRIGGERLEFT || ax == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
+            if (e.caxis.value > 16000) finish({BindType::PadAxis, ax, 1});
+        } else if (ax == SDL_CONTROLLER_AXIS_LEFTX || ax == SDL_CONTROLLER_AXIS_LEFTY ||
+                   ax == SDL_CONTROLLER_AXIS_RIGHTX || ax == SDL_CONTROLLER_AXIS_RIGHTY) {
+            // stick directions: capture the side the stick was pushed to
+            if (e.caxis.value > 16000 || e.caxis.value < -16000)
+                finish({BindType::PadAxis, ax, e.caxis.value < 0 ? -1 : 1});
         }
     }
 }
@@ -120,32 +133,62 @@ void InputSystem::clearBinding(Action a, int slot) {
 
 // ---------------------------------------------------------------- state
 
-float InputSystem::actionRaw(Action a) const {
+void InputSystem::rawParts(Action a, float& kb, float& ax) const {
     const BindList& list = binds_.get(a);
-    float best = 0;
+    kb = 0;
+    ax = 0;
     for (const Binding& b : list) {
-        float v = 0;
         switch (b.type) {
             case BindType::Key:
-                if (keys_ && b.code < keysLen_) v = keys_[b.code] ? 1.0f : 0;
+                if (keys_ && b.code < keysLen_ && keys_[b.code]) kb = 1.0f;
                 break;
             case BindType::Mouse:
-                if (b.code >= 0 && b.code < 8) v = mouseDown_[b.code] ? 1.0f : 0;
+                if (b.code >= 0 && b.code < 8 && mouseDown_[b.code]) kb = 1.0f;
                 break;
             case BindType::PadBtn:
                 for (auto* gc : controllers_)
-                    if (SDL_GameControllerGetButton(gc, (SDL_GameControllerButton)b.code)) { v = 1; break; }
+                    if (SDL_GameControllerGetButton(gc, (SDL_GameControllerButton)b.code)) {
+                        kb = 1.0f;
+                        break;
+                    }
                 break;
-            case BindType::PadAxis:
+            case BindType::PadAxis: {
+                const int axis = b.code;
+                const bool isStick =
+                    axis == SDL_CONTROLLER_AXIS_LEFTX || axis == SDL_CONTROLLER_AXIS_LEFTY ||
+                    axis == SDL_CONTROLLER_AXIS_RIGHTX || axis == SDL_CONTROLLER_AXIS_RIGHTY;
                 for (auto* gc : controllers_) {
-                    float t = SDL_GameControllerGetAxis(gc, (SDL_GameControllerAxis)b.code) / 32767.0f;
-                    if (t > v) v = t;
+                    float raw = SDL_GameControllerGetAxis(gc, (SDL_GameControllerAxis)axis) /
+                                32767.0f;
+                    float v;
+                    if (isStick) {
+                        // sticks get the per-axis deadzone, then resolve toward
+                        // the captured direction (b.dir) - triggers stay raw
+                        float ox, oy;
+                        applyDeadzone(raw, 0.0f, ox, oy);
+                        v = ox * (float)b.dir;
+                    } else {
+                        v = raw * (float)b.dir;
+                    }
+                    if (v > ax) ax = v;   // signed: opposite push reads negative
                 }
                 break;
+            }
         }
-        if (v > best) best = v;
     }
-    return best;
+}
+
+float InputSystem::actionRaw(Action a) const {
+    float kb, ax;
+    rawParts(a, kb, ax);
+    return std::max(kb, ax);   // negatives (wrong-way stick) never count as held
+}
+
+bool InputSystem::axisBound(int axis) const {
+    for (int i = 0; i < (int)Action::COUNT_; i++)
+        for (const Binding& b : binds_.get(Action(i)))
+            if (b.type == BindType::PadAxis && b.code == axis) return true;
+    return false;
 }
 
 float InputSystem::applyDeadzone(float x, float y, float& ox, float& oy) const {
@@ -226,8 +269,9 @@ void InputSystem::swivel(float& x, float& y) {
     }
     float dx, dy;
     applyDeadzone(sx, sy, dx, dy);
-    x += dx;
-    y += -dy;   // stick up (+) = look up
+    // right stick is hardcoded swivel unless a binding claimed its axes
+    if (!axisBound(SDL_CONTROLLER_AXIS_RIGHTX)) x += dx;
+    if (!axisBound(SDL_CONTROLLER_AXIS_RIGHTY)) y += -dy;   // stick up (+) = look up
 
     // keys
     x += value_[int(Action::SwivelRight)] - value_[int(Action::SwivelLeft)];
@@ -243,29 +287,51 @@ void InputSystem::swivel(float& x, float& y) {
     y = clampf(y, -1, 1);
 }
 
+float InputSystem::steerCommand() const {
+    const ControlSettings& cs = settings_->ctrl;
+    float kbR, axR, kbL, axL;
+    rawParts(Action::SteerRight, kbR, axR);
+    rawParts(Action::SteerLeft, kbL, axL);
+    float sx, sy;
+    leftStick(sx, sy);                      // sy unused here
+    if (axisBound(SDL_CONTROLLER_AXIS_LEFTX)) sx = 0;   // stick claimed by a binding
+    return clampf((kbR - kbL) + (axR - axL + sx) * cs.steerSens, -1, 1);
+}
+
 void InputSystem::buildControls(RocketSim::CarControls& out) const {
     const ControlSettings& cs = settings_->ctrl;
 
+    // Left stick (deadzoned): hardcoded fallback, suppressed per axis when a
+    // binding has claimed it - the binding's directions take over that axis.
     float sx, sy;
-    leftStick(sx, sy);  // deadzoned, unscaled: x right, y down
+    leftStick(sx, sy);  // x right, y down
+    if (axisBound(SDL_CONTROLLER_AXIS_LEFTX)) sx = 0;
+    if (axisBound(SDL_CONTROLLER_AXIS_LEFTY)) sy = 0;
 
-    float steerKey = value_[int(Action::SteerRight)] - value_[int(Action::SteerLeft)];
-    float pitchKey = value_[int(Action::PitchUp)] - value_[int(Action::PitchDown)];
-    float yawKey = value_[int(Action::YawRight)] - value_[int(Action::YawLeft)];
-    bool airRollFree = value_[int(Action::AirRollFree)] > 0.5f;
-    float rollDir = value_[int(Action::AirRollRight)] - value_[int(Action::AirRollLeft)];
+    float kbR, axR, kbL, axL;
+    rawParts(Action::PitchUp, kbR, axR);
+    rawParts(Action::PitchDown, kbL, axL);
+    const float pitchKey = kbR - kbL, pitchAx = axR - axL;
+    rawParts(Action::YawRight, kbR, axR);
+    rawParts(Action::YawLeft, kbL, axL);
+    const float yawKey = kbR - kbL, yawAx = axR - axL;
+    rawParts(Action::AirRollRight, kbR, axR);
+    rawParts(Action::AirRollLeft, kbL, axL);
+    const float rollDir = (kbR - kbL) + (axR - axL);
 
-    out.steer = clampf(steerKey + sx * cs.steerSens, -1, 1);
+    const bool airRollFree = held(Action::AirRollFree);
+
+    out.steer = steerCommand();
     // SDL stick down (+y) = pulled back = nose UP = positive pitch (matches
     // RocketSim: pitch<0 dodges forward, so stick-forward => front flip).
-    out.pitch = clampf(pitchKey + sy * cs.aerialSens, -1, 1);
+    out.pitch = clampf(pitchKey + (pitchAx + sy) * cs.aerialSens, -1, 1);
 
     if (airRollFree) {
         // free air roll: horizontal input becomes roll, yaw suppressed
         out.yaw = 0;
-        out.roll = clampf(rollDir + yawKey + sx * cs.aerialSens, -1, 1);
+        out.roll = clampf(rollDir + yawKey + (yawAx + sx) * cs.aerialSens, -1, 1);
     } else {
-        out.yaw = clampf(yawKey + sx * cs.aerialSens, -1, 1);
+        out.yaw = clampf(yawKey + (yawAx + sx) * cs.aerialSens, -1, 1);
         out.roll = clampf(rollDir, -1, 1);
     }
 
@@ -319,7 +385,18 @@ std::string InputSystem::describe(const Binding& b) {
                 default: return "Pad ?";
             }
         case BindType::PadAxis:
-            return b.code == SDL_CONTROLLER_AXIS_TRIGGERRIGHT ? "Pad RT" : "Pad LT";
+            switch (b.code) {
+                case SDL_CONTROLLER_AXIS_LEFTX:
+                    return b.dir < 0 ? "Pad LS Left" : "Pad LS Right";
+                case SDL_CONTROLLER_AXIS_LEFTY:
+                    return b.dir < 0 ? "Pad LS Up" : "Pad LS Down";
+                case SDL_CONTROLLER_AXIS_RIGHTX:
+                    return b.dir < 0 ? "Pad RS Left" : "Pad RS Right";
+                case SDL_CONTROLLER_AXIS_RIGHTY:
+                    return b.dir < 0 ? "Pad RS Up" : "Pad RS Down";
+                case SDL_CONTROLLER_AXIS_TRIGGERRIGHT: return "Pad RT";
+                default: return "Pad LT";
+            }
     }
     return "?";
 }

@@ -63,6 +63,7 @@ struct CameraSettings {
     float transitionSpeed = 1.2f;  // 1..2 (RL)
     bool shake = true;             // RL ships with camera shake ON
     bool invertSwivel = false;
+    bool snap = true;              // "Snap Camera to Default" after swivel idle
     bool ballCamToggle = true;     // true=toggle, false=hold ("Hold Ball Camera")
     bool ballCamIndicator = true;
     bool ballArrow = true;         // car->ball arrow while in car cam
@@ -92,6 +93,7 @@ struct GraphicsSettings {
     int fpsCap = 0;                // 0 = unlimited
     int particleQuality = 1;       // 0 low, 1 med, 2 high
     int msaa = 0;                  // 0/4/8
+    float wallOpacity = 0.30f;     // 0..1 walls/ceiling transparency (always on)
 };
 
 struct Settings {

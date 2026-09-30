@@ -14,6 +14,7 @@ struct RenderParams {
     float fovX = 110.0f * (float)M_PI / 180.0f;  // horizontal FOV (radians)
     bool showBallRing = true;
     bool showShadows = true;
+    float wallOpacity = 1.0f;   // 0..1 shell opacity when camera is outside
 };
 
 class Renderer {
@@ -29,7 +30,7 @@ public:
     float lastFovX = 110.0f * (float)M_PI / 180.0f;
 
 private:
-    void drawLit(const GpuMesh& mesh, const M4& model, int mode);
+    void drawLit(const GpuMesh& mesh, const M4& model, int mode, float alpha = 1.0f);
     void drawUnlit(const GpuMesh& mesh, const M4& model, float alphaMul,
                    bool additive, bool textured = false);
 

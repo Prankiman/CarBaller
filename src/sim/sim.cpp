@@ -207,7 +207,7 @@ void Sim::launchBall(const FreeplaySettings& fs) {
 
     // fire downfield relative to the car's half
     float dirY = (curCar_.pos.y < 0) ? 1.0f : -1.0f;
-    float ang = clampf(fs.launchAngle, -80, 80) * (float)M_PI / 180.0f;
+    float ang = clampf(fs.launchAngle, -90, 90) * (float)M_PI / 180.0f;
     float sp = clampf(fs.launchSpeed, 0, 6000);
     bs.vel = Vec(0, dirY * std::cos(ang) * sp, std::sin(ang) * sp);
 

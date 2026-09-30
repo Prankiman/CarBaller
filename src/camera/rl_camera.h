@@ -39,6 +39,7 @@ private:
 
     float yawOff_ = 0;          // swivel offsets (rad)
     float pitchOff_ = 0;
+    float swivelIdle_ = 0;       // seconds since the last swivel input
 
     float carYaw_ = 0;          // smoothed horizontal follow (car cam)
     V3 smoothedEye_{0, 0, 0};

@@ -16,6 +16,7 @@ void RLCamera::reset(const SimSnapshot& s) {
     desired_ = CamMode::Ball;
     blend_ = 1.0f;
     yawOff_ = pitchOff_ = 0;
+    swivelIdle_ = 0;
     carYaw_ = std::atan2(s.carF.y, s.carF.x);
     hasSmoothed_ = false;
     shakeAmp_ = 0;
@@ -99,6 +100,22 @@ void RLCamera::update(float dt, const CameraSettings& cs, const SimSnapshot& s,
     if (yawOff_ > (float)M_PI) yawOff_ -= 2 * (float)M_PI;
     if (yawOff_ < -(float)M_PI) yawOff_ += 2 * (float)M_PI;
     pitchOff_ = clampf(pitchOff_, -0.8f, 0.7f);
+
+    // ---- snap camera to default: once the swivel goes idle, ease the manual
+    // offsets back to zero at full swivel rate (Rocket League's
+    // "Snap Camera to Default"). Tiny inputs count as idle so stick noise
+    // can't hold the offset off-center.
+    if (std::fabs(swivelX) > 0.004f || std::fabs(swivelY) > 0.004f)
+        swivelIdle_ = 0;
+    else
+        swivelIdle_ += dt;
+    if (cs.snap && swivelIdle_ > 0.05f) {
+        // RL snaps back quickly right after release: near-immediate start,
+        // return rate = 2x swivel speed with a fast floor (6 rad/s).
+        const float snapStep = std::fmax(rate * 2.0f, 6.0f) * dt;
+        yawOff_ -= clampf(yawOff_, -snapStep, snapStep);
+        pitchOff_ -= clampf(pitchOff_, -snapStep, snapStep);
+    }
 
     // ---- mode transition
     float targetBlend = (desired_ == CamMode::Ball) ? 1.0f : 0.0f;

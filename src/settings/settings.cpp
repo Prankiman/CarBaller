@@ -110,6 +110,7 @@ bool Settings::save(const std::string& path) const {
         {"angle", cam.angle}, {"stiffness", cam.stiffness},
         {"swivelSpeed", cam.swivelSpeed}, {"transitionSpeed", cam.transitionSpeed},
         {"shake", cam.shake}, {"invertSwivel", cam.invertSwivel},
+        {"snap", cam.snap},
         {"ballCamToggle", cam.ballCamToggle}, {"ballCamIndicator", cam.ballCamIndicator},
         {"ballArrow", cam.ballArrow}, {"ballFloorProjection", cam.ballFloorProjection},
         {"mouseSwivel", cam.mouseSwivel}, {"mouseSens", cam.mouseSens},
@@ -127,6 +128,7 @@ bool Settings::save(const std::string& path) const {
     j["graphics"] = {
         {"vsync", gfx.vsync}, {"fpsCap", gfx.fpsCap},
         {"particleQuality", gfx.particleQuality}, {"msaa", gfx.msaa},
+        {"wallOpacity", gfx.wallOpacity},
     };
 
     json jb;
@@ -164,6 +166,7 @@ bool Settings::load(const std::string& path) {
         cam.transitionSpeed = c.value("transitionSpeed", cam.transitionSpeed);
         cam.shake = c.value("shake", cam.shake);
         cam.invertSwivel = c.value("invertSwivel", cam.invertSwivel);
+        cam.snap = c.value("snap", cam.snap);
         cam.ballCamToggle = c.value("ballCamToggle", cam.ballCamToggle);
         cam.ballCamIndicator = c.value("ballCamIndicator", cam.ballCamIndicator);
         cam.ballArrow = c.value("ballArrow", cam.ballArrow);
@@ -193,6 +196,7 @@ bool Settings::load(const std::string& path) {
         gfx.fpsCap = c.value("fpsCap", gfx.fpsCap);
         gfx.particleQuality = c.value("particleQuality", gfx.particleQuality);
         gfx.msaa = c.value("msaa", gfx.msaa);
+        gfx.wallOpacity = c.value("wallOpacity", gfx.wallOpacity);
     }
     if (j.contains("bindings")) {
         auto def = Bindings::defaults();
@@ -230,7 +234,8 @@ bool Settings::load(const std::string& path) {
     ctrl.keyboardSteerSmooth = clampf(ctrl.keyboardSteerSmooth, 0.0f, 0.25f);
     if (ctrl.deadzoneShape != 0 && ctrl.deadzoneShape != 1) ctrl.deadzoneShape = 0;
     freeplay.launchSpeed = clampf(freeplay.launchSpeed, 1000.0f, 5000.0f);
-    freeplay.launchAngle = clampf(freeplay.launchAngle, 0.0f, 60.0f);
+    freeplay.launchAngle = clampf(freeplay.launchAngle, -90.0f, 90.0f);
+    gfx.wallOpacity = clampf(gfx.wallOpacity, 0.0f, 1.0f);
 
     return true;
 }

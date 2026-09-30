@@ -6,9 +6,11 @@
 #include "mesh_builder.h"
 
 #include <string>
+#include <vector>
 
 struct GameAssets {
-    GpuMesh arena;        // floor/walls/ceiling planes + .cmf meshes (lit, world grid)
+    GpuMesh arenaFloor;  // floor quad only: always opaque, drawn first
+    GpuMesh arenaShell;  // ceiling, side walls, .cmf ramps/nets (see-through)
     GpuMesh markings;     // field lines (unlit)
     GpuMesh carBody;      // Fennec-ish body (lit)
     GpuMesh wheelFront;   // front wheels (lit), drawn 2x with steer+spin

@@ -62,7 +62,7 @@ void capturePlaceholder() {
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.13f, 0.42f, 0.72f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.17f, 0.50f, 0.84f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.10f, 0.34f, 0.60f, 1.0f));
-    ImGui::Button("... press a key / mouse button / pad button (Esc cancels)");
+    ImGui::Button("... press a key / mouse / pad button or stick direction (Esc cancels)");
     ImGui::PopStyleColor(3);
 }
 
@@ -77,6 +77,10 @@ void drawCameraTab(CameraSettings& c, bool& changed) {
           "Shake the camera on impacts. Rocket League ships with this ON.");
     check("Invert Swivel", &c.invertSwivel, changed,
           "Invert the vertical camera swivel direction.");
+    check("Snap Camera to Default", &c.snap, changed,
+          "After you stop swiveling, the camera eases back to its default "
+          "angle (Rocket League's snap behavior). Off keeps the swivel where "
+          "you left it.");
 
     sliderF("FOV", &c.fov, 60.0f, 110.0f, "%.0f", changed,
             "Horizontal field of view. Rocket League: 60 - 110 (default 110).");
@@ -157,8 +161,9 @@ void drawFreeplayTab(FreeplaySettings& f, bool& changed) {
 
     sliderF("Launch Ball Speed", &f.launchSpeed, 1000.0f, 5000.0f, "%.0f uu/s", changed,
             "Speed of the ball when 'Launch Ball' is pressed.");
-    sliderF("Launch Angle", &f.launchAngle, 0.0f, 60.0f, "%.0f deg", changed,
-            "Upward angle of the launched ball, in degrees.");
+    sliderF("Launch Angle", &f.launchAngle, -90.0f, 90.0f, "%.0f deg", changed,
+            "Angle of the launched ball: 0 = straight downfield, 90 = straight "
+            "up, negative = angled back down.");
 
     int preset = f.takePositionPreset;
     comboIndex("Take Position", &preset, 6, kPresets, changed,
@@ -191,6 +196,11 @@ void drawGraphicsTab(GraphicsSettings& g, bool& changed) {
                "Multisample anti-aliasing on edges.");
     g.msaa = (msaaIdx == 1) ? 4 : (msaaIdx == 2) ? 8 : 0;
     ImGui::TextDisabled("MSAA changes require restarting the game to take effect.");
+
+    sliderF("Wall Opacity", &g.wallOpacity, 0.0f, 1.0f, "%.2f", changed,
+            "Opacity of the arena walls and ceiling (Rocket League keeps them "
+            "see-through), so you can always see the car and ball through them. "
+            "0 = invisible, 1 = solid. Default 0.30.");
 }
 
 void drawBindingsTab(Settings& settings, InputSystem& input, bool& changed) {
@@ -210,7 +220,10 @@ void drawBindingsTab(Settings& settings, InputSystem& input, bool& changed) {
     const int capSlot = input.captureSlot();
 
     ImGui::TextDisabled(
-        "Click a binding to re-bind it, x removes it, + adds another. Esc cancels a capture.");
+        "Click a binding to re-bind it, x removes it, + adds another. Esc cancels a capture. "
+        "Stick directions can be bound too (e.g. LS Left -> Steer Left, or RS Down -> Boost); "
+        "binding a stick direction claims that whole axis, so it stops doing its default "
+        "steering/swivel job - bind the other direction as well to keep both.");
 
     for (int i = 0; i < (int)Action::COUNT_; i++) {
         const Action a = (Action)i;

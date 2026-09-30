@@ -1,5 +1,6 @@
 #include "assets.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -94,15 +95,20 @@ void appendCmf(MeshBuilder& mb, const std::string& path) {
     }
 }
 
-void buildArena(MeshBuilder& mb, const std::string& meshDir) {
+void buildArenaFloor(MeshBuilder& mb) {
     const Col floorC(0.105f, 0.140f, 0.215f, 1);
+    const float X = 4096, Y = 5120;
+
+    // floor (normal +Z)
+    mb.quad({-X, -Y, 0}, {X, -Y, 0}, {X, Y, 0}, {-X, Y, 0}, floorC);
+}
+
+void buildArenaShell(MeshBuilder& mb, const std::string& meshDir) {
     const Col ceilC(0.085f, 0.095f, 0.125f, 1);
     const Col wallC(0.165f, 0.170f, 0.205f, 1);
 
     const float X = 4096, Y = 5120, Z = 2044;
 
-    // floor (normal +Z)
-    mb.quad({-X, -Y, 0}, {X, -Y, 0}, {X, Y, 0}, {-X, Y, 0}, floorC);
     // ceiling (normal -Z)
     mb.quad({-X, -Y, Z}, {-X, Y, Z}, {X, Y, Z}, {X, -Y, Z}, ceilC);
     // side walls (inward normals)
@@ -323,8 +329,13 @@ void buildBallTexture(Texture2D& tex) {
 bool GameAssets::build(const std::string& meshDir) {
     {
         MeshBuilder mb;
-        buildArena(mb, meshDir);
-        arena.upload(mb.verts, mb.idx);
+        buildArenaFloor(mb);
+        arenaFloor.upload(mb.verts, mb.idx);
+    }
+    {
+        MeshBuilder mb;
+        buildArenaShell(mb, meshDir);
+        arenaShell.upload(mb.verts, mb.idx);
     }
     {
         MeshBuilder mb;
@@ -375,11 +386,12 @@ bool GameAssets::build(const std::string& meshDir) {
         }
         shadowDisc.upload(mb.verts, mb.idx);
     }
-    return arena.valid() && carBody.valid() && ball.valid();
+    return arenaFloor.valid() && arenaShell.valid() && carBody.valid() && ball.valid();
 }
 
 void GameAssets::destroy() {
-    arena.destroy();
+    arenaFloor.destroy();
+    arenaShell.destroy();
     markings.destroy();
     carBody.destroy();
     wheelFront.destroy();

@@ -30,6 +30,7 @@ in vec3 vNrm;
 in vec2 vUV;
 in vec4 vCol;
 uniform int uMode;      // 0 = arena (world grid), 1 = textured, 2 = plain
+uniform float uAlpha;   // global alpha (see-through walls)
 uniform sampler2D uTex;
 uniform vec3 uLightDir; // direction the light travels
 out vec4 frag;
@@ -50,7 +51,7 @@ void main() {
     float ndl = max(dot(N, -uLightDir), 0.0);
     vec3 hemi = mix(vec3(0.70, 0.74, 0.84), vec3(1.05), N.z * 0.5 + 0.5);
     vec3 light = vec3(0.36) * hemi + vec3(1.0, 0.97, 0.90) * ndl * 0.95;
-    frag = vec4(pow(albedo * light, vec3(1.0/2.2)), vCol.a);
+    frag = vec4(pow(albedo * light, vec3(1.0/2.2)), vCol.a * uAlpha);
 }
 )";
 
@@ -112,10 +113,11 @@ void Renderer::shutdown() {
     unlit_.destroy();
 }
 
-void Renderer::drawLit(const GpuMesh& mesh, const M4& model, int mode) {
+void Renderer::drawLit(const GpuMesh& mesh, const M4& model, int mode, float alpha) {
     if (!mesh.valid()) return;
     lit_.setMat4("uModel", model.m);
     lit_.setInt("uMode", mode);
+    lit_.setFloat("uAlpha", alpha);   // GL defaults to 0 - must set every draw
     mesh.draw();
 }
 
@@ -154,8 +156,14 @@ void Renderer::render(const RLCamera& cam, const RenderParams& p, const Particle
     lit_.setVec3("uLightDir", LIGHT_DIR.x, LIGHT_DIR.y, LIGHT_DIR.z);
     lit_.setInt("uTex", 0);
 
+    // ---------- walls/ceiling are always see-through (like Rocket League);
+    // only the floor stays fully solid. At opacity 1 the shell is just part
+    // of the opaque pass instead.
+    const bool seeThrough = p.wallOpacity < 0.999f;
+
     // ---------- opaque
-    drawLit(assets_.arena, M4::identity(), 0);
+    drawLit(assets_.arenaFloor, M4::identity(), 0);   // floor always solid
+    if (!seeThrough) drawLit(assets_.arenaShell, M4::identity(), 0);
 
     // ball
     {
@@ -246,6 +254,14 @@ void Renderer::render(const RLCamera& cam, const RenderParams& p, const Particle
             glBlendFunc(GL_SRC_ALPHA, GL_ONE);  // additive glow
             particleMesh_.draw();
         }
+    }
+
+    // ---------- see-through walls, drawn last: blended over whatever is
+    // behind them (car, ball, floor, sky), depth-tested but no depth writes
+    if (seeThrough) {
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        lit_.use();   // drawLit's uniforms must land on the lit program
+        drawLit(assets_.arenaShell, M4::identity(), 0, p.wallOpacity);
     }
 
     glDepthMask(GL_TRUE);

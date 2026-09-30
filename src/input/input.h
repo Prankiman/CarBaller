@@ -23,6 +23,12 @@ public:
     bool held(Action a) const;
     float value(Action a) const;            // 0..1 analog (keys=1)
 
+    // Signed steer command in [-1,1] - the single source used for both
+    // CarControls.steer and the front-wheel visual: keyboard keys unscaled,
+    // bound stick directions x steer sensitivity, plus the left stick when
+    // no binding has claimed its X axis.
+    float steerCommand() const;
+
     // Camera swivel in [-1,1]: x = right, y = +1 = look up.
     // (non-const: consumes accumulated mouse deltas)
     void swivel(float& x, float& y);
@@ -62,6 +68,12 @@ public:
 private:
     void openController(int deviceIndex);
     float actionRaw(Action a) const;
+    // Split an action's raw input into key/mouse/pad-button (kb) and pad-axis
+    // (ax) parts; actionRaw = max(kb, ax), commands compose them signed.
+    void rawParts(Action a, float& kb, float& ax) const;
+    // True when any binding claims this SDL axis (sticks: claiming an axis
+    // takes it over - its hardcoded default contribution is suppressed).
+    bool axisBound(int axis) const;
     float applyDeadzone(float x, float y, float& ox, float& oy) const;
 
     const Settings* settings_ = nullptr;

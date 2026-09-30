@@ -283,12 +283,7 @@ int runApp(int argc, char** argv) {
         } else {
             a.input.buildControls(a.sim.car()->controls);
             // mirror buildControls' steer for front-wheel visuals
-            float sx = 0, sy = 0;
-            a.input.leftStick(sx, sy);
-            steerVisual = clampf(
-                a.input.value(Action::SteerRight) - a.input.value(Action::SteerLeft) +
-                    sx * a.settings.ctrl.steerSens,
-                -1, 1);
+            steerVisual = a.input.steerCommand();
         }
 
         // ---------------- scripted self-test (CARBALLER_SELFTEST=1)
@@ -388,6 +383,7 @@ int runApp(int argc, char** argv) {
         rp.fovX = a.settings.cam.fov * (float)M_PI / 180.0f;
         rp.showBallRing = a.settings.cam.ballFloorProjection;
         rp.showShadows = true;
+        rp.wallOpacity = a.settings.gfx.wallOpacity;
         a.renderer.render(a.cam, rp, a.particles);
 
         // ---------------- self-test telemetry
