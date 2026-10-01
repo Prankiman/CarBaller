@@ -37,6 +37,9 @@ jobs:
         env:
           CARBALLER_SELFTEST: "1"
           CARBALLER_SOURCE_DIR: ${{ github.workspace }}
+          # headless runner has no sound hardware: the dummy driver still
+          # opens a device, so sound loading + mixing run in the selftest
+          SDL_AUDIODRIVER: "dummy"
         run: xvfb-run -a ./build/carballer
 
   windows:

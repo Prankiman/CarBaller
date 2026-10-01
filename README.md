@@ -126,8 +126,8 @@ Everything — including each stick direction — is rebindable in the in-game
 ## Configuration
 
 All options live in the settings menu (`Esc`): camera, controls, freeplay,
-graphics and bindings. Values follow Rocket League's published ranges and
-Psyonix's defaults, and are saved to `settings.json` on exit.
+graphics, sound and bindings. Values follow Rocket League's published ranges
+and Psyonix's defaults, and are saved to `settings.json` on exit.
 
 ## Acknowledgments
 
@@ -138,7 +138,11 @@ Psyonix's defaults, and are saved to `settings.json` on exit.
 - OpenGL & GLEW — rendering.
 - [Rocket League](https://rocketleague.psyonix.com) by Psyonix — the game this
   trainer is modeled after; all geometry is procedural or built from publicly
-  mirrored collision data, no game assets are redistributed.
+  mirrored collision data, no game models are redistributed.
+- Sound effects from
+  [ItsBranK/RocketLeague-Audio](https://github.com/ItsBranK/RocketLeague-Audio)
+  (The Unlicense): boost, engine, jump/flip, ball impact and menu UI sounds,
+  trimmed and loop-mixed into `assets/sounds/` (exact provenance in its README).
 - [Fennec model][fennec-thing] by Thingiverse user **PsychItsMike**
   (CC BY-NC-SA 4.0), after the original by **Adam Williams** — used for the
   drivable car body (not affiliated with or endorsed by Psyonix).

@@ -3,12 +3,24 @@
 #include "RocketSim/src/RocketSim.h"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 
 using namespace RocketSim;
 
 static V3 toV3(const Vec& v) { return {v.x, v.y, v.z}; }
 static Vec toVec(const V3& v) { return Vec(v.x, v.y, v.z); }
+
+// Arena shell planes for the ball-thud detector (soccar). The +-y walls
+// carry the goal-mouth cutout; posts and crossbar stay solid.
+static constexpr float kShellHalfX = (float)RocketSim::RLConst::ARENA_EXTENT_X;  // 4096
+static constexpr float kShellHalfY = (float)RocketSim::RLConst::ARENA_EXTENT_Y;  // 5120 (field)
+static constexpr float kShellCeilZ = 2044.0f;              // soccar ceiling height
+static constexpr float kGoalHalfW = 893.0f;                // mouth is 1786 wide
+static constexpr float kGoalHeight = 642.77f;              // mouth height
+static constexpr float kShellMargin = 40.0f;               // uu slack for 120 Hz steps
+static constexpr float kThudMinImpact = 250.0f;            // uu/s; below = bounce chatter
+static constexpr uint64_t kThudCooldownTicks = 8;          // ~67 ms
 
 bool Sim::init(const std::string& meshDir) {
     if (!std::filesystem::exists(std::filesystem::path(meshDir) / "soccar")) {
@@ -33,6 +45,8 @@ bool Sim::init(const std::string& meshDir) {
     arena_->_mutatorConfig.boostUsedPerSecond = 0;
     arena_->_mutatorConfig.carSpawnBoostAmount = 100;
     arena_->_mutatorConfig.demoMode = DemoMode::DISABLED;
+
+    ballR_ = arena_->ball->GetRadius();
 
     car_ = arena_->AddCar(Team::BLUE, CAR_CONFIG_OCTANE);
     if (!car_) {
@@ -72,8 +86,22 @@ void Sim::stepOnce() {
         car_->SetState(s);
     }
 
+    // Jump/flip sound triggers: rising edges of RocketSim's jump state.
+    if (onCarJump) {
+        const bool jumpEdge = (curCar_.isJumping && !prevCar_.isJumping) ||
+                              (curCar_.hasDoubleJumped && !prevCar_.hasDoubleJumped);
+        if (jumpEdge) onCarJump();
+    }
+    if (onCarFlip && curCar_.hasFlipped && !prevCar_.hasFlipped) onCarFlip();
+
     const BallHitInfo& hi = curCar_.ballHitInfo;
-    if (hi.isValid && hi.tickCountWhenHit != lastHitTick_) {
+    const bool freshCarHit = hi.isValid && hi.tickCountWhenHit != lastHitTick_;
+
+    // Ball vs arena shell (floor/walls/ceiling). Runs first so the fresh
+    // car-hit flag can suppress it: car impacts carry their own fx.
+    detectSurfaceHit(freshCarHit);
+
+    if (freshCarHit) {
         lastHitTick_ = hi.tickCountWhenHit;
         if (onBallHit) {
             BallHitEvent ev;
@@ -82,6 +110,40 @@ void Sim::stepOnce() {
             ev.tick = hi.tickCountWhenHit;
             onBallHit(ev);
         }
+    }
+}
+
+void Sim::detectSurfaceHit(bool carHitThisTick) {
+    if (carHitThisTick || !arena_ || !arena_->ball) return;
+    if (ticksSimulated < lastSurfaceTick_ + kThudCooldownTicks) return;
+
+    const Vec& p = curBall_.pos;
+    const Vec& v = prevBall_.vel;   // velocity entering this tick
+    const float R = ballR_;
+
+    // An impact counts when the ball sits against a plane (within the
+    // margin) AND was moving into it faster than bounce chatter.
+    float impact = 0;
+    if (p.z - R < kShellMargin)                 impact = std::max(impact, -v.z);  // floor
+    if (kShellCeilZ - (p.z + R) < kShellMargin) impact = std::max(impact,  v.z);  // ceiling
+    if (kShellHalfX - (p.x + R) < kShellMargin) impact = std::max(impact,  v.x);  // +x wall
+    if ((p.x - R) + kShellHalfX < kShellMargin) impact = std::max(impact, -v.x);  // -x wall
+
+    // +-y walls: absent across the goal mouth (x/z inside the opening), and
+    // nonexistent once the ball is already beyond the goal line.
+    const bool inGoal = std::fabs(p.y) > kShellHalfY;
+    const bool inMouth = std::fabs(p.x) < kGoalHalfW && p.z < kGoalHeight;
+    if (!inGoal && !inMouth) {
+        if (kShellHalfY - (p.y + R) < kShellMargin) impact = std::max(impact,  v.y);
+        if ((p.y - R) + kShellHalfY < kShellMargin) impact = std::max(impact, -v.y);
+    }
+
+    if (impact < kThudMinImpact) return;
+    lastSurfaceTick_ = ticksSimulated;
+    if (onBallSurfaceHit) {
+        BallSurfaceHitEvent ev;
+        ev.strength = impact;
+        onBallSurfaceHit(ev);
     }
 }
 
@@ -213,6 +275,9 @@ void Sim::launchBall(const FreeplaySettings& fs) {
 
     arena_->ball->SetState(bs);
     prevBall_ = curBall_ = arena_->ball->GetState();
+    // Artificial launch: suppress thuds for the next few ticks so a
+    // downward launch can't fake an impact against the floor it starts on.
+    lastSurfaceTick_ = ticksSimulated;
 }
 
 void Sim::startDribble() {

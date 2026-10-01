@@ -97,11 +97,16 @@ struct GraphicsSettings {
     bool showHitboxes = false;     // outline the car/ball physics hitboxes
 };
 
+struct SoundSettings {
+    float volume = 0.7f;        // 0..1 master SFX volume
+};
+
 struct Settings {
     CameraSettings cam;
     ControlSettings ctrl;
     FreeplaySettings freeplay;
     GraphicsSettings gfx;
+    SoundSettings sound;
     Bindings binds;
 
     bool load(const std::string& path);

@@ -35,6 +35,10 @@ struct BallHitEvent {
     uint64_t tick = 0;
 };
 
+struct BallSurfaceHitEvent {
+    float strength = 0;      // impact speed into the surface (uu/s)
+};
+
 class Sim {
 public:
     // meshDir: folder that contains "soccar/*.cmf"
@@ -62,6 +66,15 @@ public:
     // Called once per ball hit while stepping
     std::function<void(const BallHitEvent&)> onBallHit;
 
+    // Called when the ball strikes the arena shell (floor/walls/ceiling),
+    // with car hits excluded - those have their own feedback path.
+    std::function<void(const BallSurfaceHitEvent&)> onBallSurfaceHit;
+
+    // Called the tick a jump starts (ground jump or double jump), and the
+    // tick a flip (dodge) starts. Mutually exclusive in RocketSim.
+    std::function<void()> onCarJump;
+    std::function<void()> onCarFlip;
+
     float tickDt = 1.0f / 120.0f;
     uint64_t ticksSimulated = 0;
 
@@ -74,6 +87,9 @@ public:
 
 private:
     void stepOnce();
+    // Fire onBallSurfaceHit when the ball's incoming velocity shows a real
+    // impact against one of the arena shell planes.
+    void detectSurfaceHit(bool carHitThisTick);
 
     RocketSim::Arena* arena_ = nullptr;
     RocketSim::Car* car_ = nullptr;
@@ -83,4 +99,6 @@ private:
 
     double accum_ = 0;
     uint64_t lastHitTick_ = ~0ULL;
+    uint64_t lastSurfaceTick_ = 0;   // thud cooldown (~67 ms)
+    float ballR_ = 91.25f;           // soccar ball radius, set in init()
 };

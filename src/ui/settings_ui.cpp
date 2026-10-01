@@ -1,5 +1,5 @@
 // Rocket League-style in-game settings menu (ImGui).
-// Tabs: Camera / Controls / Freeplay / Graphics / Bindings / Reset.
+// Tabs: Camera / Controls / Freeplay / Graphics / Sound / Bindings / Reset.
 
 #include "settings_ui.h"
 
@@ -308,6 +308,25 @@ void drawBindingsTab(Settings& settings, InputSystem& input, bool& changed) {
     }
 }
 
+void drawSoundTab(SoundSettings& s, bool& changed) {
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Volume");
+    ImGui::SameLine();
+    ImGui::PushItemWidth(-FLT_MIN);
+    float pct = s.volume * 100.0f;
+    if (ImGui::SliderFloat("##Volume", &pct, 0.0f, 100.0f, "%.0f%%",
+                           ImGuiSliderFlags_AlwaysClamp)) {
+        s.volume = pct / 100.0f;
+        changed = true;
+    }
+    ImGui::PopItemWidth();
+    ImGui::SetItemTooltip(
+        "Master volume for all sound effects (menu, boost, engine, jumps, "
+        "ball impacts).");
+    ImGui::TextDisabled(
+        "Sounds: menu clicks, boost, engine hum, jumps/flips and ball hits.");
+}
+
 void drawResetTab(Settings& settings, InputSystem& input, bool& changed) {
     ImGui::TextWrapped("Restore every setting to its Rocket League-style default.");
     if (ImGui::Button("Reset All to Defaults")) {
@@ -359,6 +378,12 @@ bool SettingsUI::draw(Settings& settings, InputSystem& input, bool* pOpen) {
         if (ImGui::BeginTabItem("Graphics")) {
             ImGui::PushID("Graphics");
             drawGraphicsTab(settings.gfx, changed);
+            ImGui::PopID();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Sound")) {
+            ImGui::PushID("Sound");
+            drawSoundTab(settings.sound, changed);
             ImGui::PopID();
             ImGui::EndTabItem();
         }

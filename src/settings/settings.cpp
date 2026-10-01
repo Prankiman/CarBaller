@@ -130,6 +130,9 @@ bool Settings::save(const std::string& path) const {
         {"particleQuality", gfx.particleQuality}, {"msaa", gfx.msaa},
         {"wallOpacity", gfx.wallOpacity}, {"showHitboxes", gfx.showHitboxes},
     };
+    j["sound"] = {
+        {"volume", sound.volume},
+    };
 
     json jb;
     for (auto& [a, list] : binds.binds) {
@@ -198,6 +201,12 @@ bool Settings::load(const std::string& path) {
         gfx.msaa = c.value("msaa", gfx.msaa);
         gfx.wallOpacity = c.value("wallOpacity", gfx.wallOpacity);
         gfx.showHitboxes = c.value("showHitboxes", gfx.showHitboxes);
+    }
+    if (j.contains("sound")) {
+        auto& c = j["sound"];
+        sound.volume = c.value("volume", sound.volume);
+        if (sound.volume < 0.0f) sound.volume = 0.0f;
+        if (sound.volume > 1.0f) sound.volume = 1.0f;
     }
     if (j.contains("bindings")) {
         auto def = Bindings::defaults();

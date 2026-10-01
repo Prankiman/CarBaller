@@ -5,12 +5,14 @@
 #include <imgui.h>
 #include <backends/imgui_impl_opengl3.h>
 #include <backends/imgui_impl_sdl2.h>
+#include <imgui_internal.h>  // ImGui::GetActiveID for the menu click sound
 
 #include <cstdlib>
 #include <filesystem>
 #include <thread>
 #include <cstdio>
 
+#include "../audio/audio.h"
 #include "../camera/rl_camera.h"
 #include "../fx/particles.h"
 #include "../input/input.h"
@@ -33,6 +35,7 @@ struct App {
     RLCamera cam;
     Renderer renderer;
     ParticleSystem particles;
+    Audio audio;
     HUD hud;
     SettingsUI settingsUI;
 
@@ -74,6 +77,19 @@ std::string findModelDir() {
     };
     for (const char* c : candidates) {
         if (std::filesystem::exists(std::filesystem::path(c) / "fennec.stl"))
+            return c;
+    }
+    return candidates[0];
+}
+
+std::string findSoundDir() {
+    const char* candidates[] = {
+        "assets/sounds",
+        "../assets/sounds",
+        CARBALLER_SOURCE_DIR "/assets/sounds",
+    };
+    for (const char* c : candidates) {
+        if (std::filesystem::exists(std::filesystem::path(c) / "boost.wav"))
             return c;
     }
     return candidates[0];
@@ -176,6 +192,11 @@ int runApp(int argc, char** argv) {
     // ---- input
     a.input.init(a.window, &a.settings);
 
+    // ---- sound: SFX (menu / boost / engine / impacts / jump-flip). Any
+    // failure - no device, missing files - degrades to silent no-ops.
+    a.audio.init(findSoundDir());
+    a.audio.setMasterVolume(a.settings.sound.volume);
+
     // ---- sim
     std::string meshDir = findMeshDir();
     if (!a.sim.init(meshDir)) {
@@ -224,6 +245,7 @@ int runApp(int argc, char** argv) {
         const bool fresh = a.lastHitFx < 0 || (a.nowSec - a.lastHitFx) >= 0.1;
         if (!fresh || ev.strength < 300.0f) return;
         a.lastHitFx = a.nowSec;
+        a.audio.playThud(clampf(ev.strength / 3500.0f, 0.35f, 1.0f));
         int q = a.settings.gfx.particleQuality;
         a.particles.spawnImpact(ev.pos, ev.strength, q);
         if (a.settings.cam.shake)
@@ -233,6 +255,18 @@ int runApp(int argc, char** argv) {
             a.input.rumble(strong, 0.0f, 140);
         }
     };
+
+    // ---- ball vs arena shell thud (floor/walls/ceiling); the sim skips
+    // car hits, those keep their own sparkle/rumble feedback above.
+    a.sim.onBallSurfaceHit = [&a](const BallSurfaceHitEvent& ev) {
+        a.audio.playThud(clampf(ev.strength / 2500.0f, 0.25f, 1.0f));
+    };
+
+    // ---- jump / flip one-shots; the sim fires these on the exact tick the
+    // jump or dodge starts (ground jump, double jump and flip are all edges
+    // of RocketSim's jump state, flips hit a touch harder).
+    a.sim.onCarJump = [&a]() { a.audio.playJump(0.85f); };
+    a.sim.onCarFlip = [&a]() { a.audio.playJump(1.0f); };
 
     applyGraphics(a);
 
@@ -275,6 +309,7 @@ int runApp(int argc, char** argv) {
                 SDL_SetRelativeMouseMode(SDL_FALSE);
             }
             if (!a.menuOpen) a.needSave = true;  // save when leaving the menu too
+            a.audio.playMenu(0.7f);              // menu open/close blip
         }
         if (a.input.pressed(Action::ToggleStats)) a.statsVisible = !a.statsVisible;
 
@@ -360,6 +395,15 @@ int runApp(int argc, char** argv) {
 
         SimSnapshot snap = a.sim.snapshot(a.sim.paused ? 1.0f
                                                        : clampf(float(a.sim.accumAlpha()), 0, 1));
+
+        // ---------------- sound loops: boost while flames fly; the engine
+        // hum runs whenever play is active (idle = low pitch, no input
+        // needed), pitched by speed up to supersonic.
+        {
+            const float spd = clampf(snap.carVel.len() / 2300.0f, 0.0f, 1.0f);
+            a.audio.setMotorLoop(!a.menuOpen, spd);
+            a.audio.setBoostLoop(!a.menuOpen && snap.boosting);
+        }
 
         // RL-style gamepad feedback: rumble on boost activation + hard landings
         // (ball impacts rumble in onBallHit above).
@@ -471,6 +515,7 @@ int runApp(int argc, char** argv) {
                 a.needSave = true;
                 a.sim.applyControlSettings(a.settings.ctrl);
                 applyGraphics(a);
+                a.audio.setMasterVolume(a.settings.sound.volume);
             }
             if (!pOpen) {
                 a.menuOpen = false;
@@ -483,6 +528,9 @@ int runApp(int argc, char** argv) {
             a.settings.save("settings.json");
             a.needSave = false;
         }
+
+        // menu sfx: any widget the click activated (buttons, sliders, tabs)
+        if (io.MouseClicked[0] && ImGui::GetActiveID() != 0) a.audio.playMenu();
 
         ImGui::Render();
         glViewport(0, 0, dw, dh);
@@ -509,6 +557,7 @@ int runApp(int argc, char** argv) {
     a.settings.binds = a.input.bindings();
     a.settings.save("settings.json");
 
+    a.audio.shutdown();
     a.renderer.shutdown();
     a.sim.shutdown();
     a.input.shutdown();
