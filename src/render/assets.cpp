@@ -375,24 +375,31 @@ void appendStl(const std::vector<float>& tris, MeshBuilder& mb,
     }
 }
 
-constexpr float FK = 1.082f;      // model units -> car units (110.9 -> 120)
+// Scale + placement against the real Octane hitbox (RocketSim config: 120.51
+// long, top at z=40.09 in car space, rear plane at x=-46.38). FK is chosen so
+// the roof ends just under the hitbox top ("hitbox barely taller than the
+// Fennec"), and FBACK puts the tail just behind the hitbox rear, peeking out.
+constexpr float FK = 1.32f;       // model units -> car units (110.9 -> 146.4)
+constexpr float FBACK = -49.5f;   // body rear plane (3.1 uu behind the box)
 constexpr float FGX = -12.01f;    // model body center (x, width axis)
 constexpr float FGY = -36.4f;     // model rear-most point (y, length axis)
 constexpr float CAR_GROUND = -17.0f;  // wheel contact plane in car space
 
 // Model -> car: forward +Y -> +X (yaw -90 deg), width X -> -Y, ground to -17.
 V3 fennecBodyXf(const V3& p) {
-    return V3((p.y - FGY) * FK - 46.0f, -(p.x - FGX) * FK, p.z * FK + CAR_GROUND);
+    return V3((p.y - FGY) * FK + FBACK, -(p.x - FGX) * FK, p.z * FK + CAR_GROUND);
 }
 
 // Paint: body gray; glass on raked screens and the upper greenhouse.
+// z/x cutouts are model-space window lines re-mapped through fennecBodyXf at
+// the current FK/FBACK - keep them in sync if the placement changes.
 Col fennecBodyCol(const V3& p, const V3& n) {
     const Col body(0.78f, 0.79f, 0.81f, 1);
     const Col glass(0.05f, 0.065f, 0.09f, 1);
     const bool raked = std::fabs(n.z) > 0.25f && std::fabs(n.z) < 0.94f &&
-                       std::fabs(n.y) > 0.25f && p.z > 15.0f;
+                       std::fabs(n.y) > 0.25f && p.z > 22.0f;
     const bool greenhouse = std::fabs(n.y) > 0.85f && n.z < 0.45f &&
-                            p.z > 17.5f && p.x > -36.0f && p.x < 18.0f;
+                            p.z > 25.1f && p.x > -37.3f && p.x < 28.6f;
     return (raked || greenhouse) ? glass : body;
 }
 
@@ -412,10 +419,11 @@ bool buildFennecWheels(MeshBuilder& front, MeshBuilder& back,
     if (!readStl(modelDir + "/rear_wheel.stl", wr)) return false;
 
     const float rF = 19.5f / 2 * FK, rR = 22.0f / 2 * FK;
-    const float lat = 21.5f;
-    // Arch centers measured from the body STL's wheel openings.
-    const V3 mF(49.6f, 0, CAR_GROUND + rF);
-    const V3 mR(-23.9f, 0, CAR_GROUND + rR);
+    const float lat = 26.2f;
+    // Arch centers measured from the body STL's wheel openings, re-mapped
+    // through fennecBodyXf at the current FK/FBACK (1.082/-46 -> 1.32/-49.5).
+    const V3 mF(67.1f, 0, CAR_GROUND + rF);
+    const V3 mR(-22.5f, 0, CAR_GROUND + rR);
     const float cFx = -92.99f, cFy = 42.35f;   // print-layout centers
     const float cRx = -84.9f, cRy = -3.99f;
 
