@@ -43,10 +43,12 @@ private:
     float pitchOff_ = 0;
     float swivelIdle_ = 0;       // seconds since the last swivel input
 
-    // Car-cam heading: follows the nose while grounded, frozen at the last
-    // grounded value for the whole airborne phase (RL doesn't move the
-    // camera's frame of reference until the car touches ground again).
+    // Car-cam heading: follows the nose while grounded; the instant the car
+    // leaves any surface it snaps onto the rear/front axis of that moment and
+    // is held for the whole airborne phase (RL takes the takeoff attitude as
+    // the frame of reference until the car touches ground again).
     float carYaw_ = 0;
+    bool wasGrounded_ = true;
     V3 smoothedEye_{0, 0, 0};
     bool hasSmoothed_ = false;
 

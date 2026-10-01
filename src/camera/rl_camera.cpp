@@ -19,6 +19,7 @@ void RLCamera::reset(const SimSnapshot& s, const CameraSettings& cs) {
     yawOff_ = pitchOff_ = 0;
     swivelIdle_ = 0;
     carYaw_ = std::atan2(s.carF.y, s.carF.x);
+    wasGrounded_ = s.onGround;
     blend_ = (desired_ == CamMode::Ball) ? 1.0f : 0.0f;  // snap, no animation
     hasSmoothed_ = false;
     shakeAmp_ = 0;
@@ -64,23 +65,31 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
 void RLCamera::computeCarCam(const CameraSettings& cs, const SimSnapshot& s,
                              float dt, V3& outEye, V3& outTarget) {
     // The whole air rule, deliberately simple: grounded = the camera sits
-    // behind the rear, following the nose heading. Airborne = the heading is
-    // held at whatever it was when the car last touched floor/ceiling, so the
-    // eye keeps the exact position relative to the car it had at takeoff.
-    // Pitch, roll and yaw in flight only translate the camera with the car -
-    // they never swing it around - and it re-anchors the instant the car
-    // grounds again.
+    // behind the rear, following the nose heading. On the instant the car
+    // leaves a surface - any surface - the rear/front axis at that instant
+    // becomes the frame of reference: the heading snaps onto the nose axis
+    // (so ground follow-lag from a hard turn or an unfinished landing
+    // realignment can't skew the flight) and is then held, so the eye keeps
+    // the position relative to the car it had at takeoff. Pitch, roll and
+    // yaw in flight only translate the camera with the car - they never
+    // swing it around - and it re-anchors the instant the car grounds again.
+    const float fxy = std::sqrt(s.carF.x * s.carF.x + s.carF.y * s.carF.y);
     if (s.onGround) {
         // Nose projected on the ground plane: well-defined on floor, ceiling
         // and walls, degenerate only while driving straight up a wall, where
         // the heading is simply held instead of snapping on noise.
-        const float fxy = std::sqrt(s.carF.x * s.carF.x + s.carF.y * s.carF.y);
         if (fxy > 0.15f) {
             const float desiredYaw = std::atan2(s.carF.y, s.carF.x);
             const float delta = wrapAngle(desiredYaw - carYaw_);
             carYaw_ += delta * std::min(12.0f * dt, 1.0f);
         }
+    } else if (wasGrounded_ && fxy > 0.15f) {
+        // Takeoff: anchor on the rear/front axis of this exact moment (the
+        // held value is kept when the nose points straight up/down, where
+        // the horizontal projection carries no direction).
+        carYaw_ = std::atan2(s.carF.y, s.carF.x);
     }
+    wasGrounded_ = s.onGround;
 
     float lookYaw = carYaw_ + yawOff_;
     V3 fwd(std::cos(lookYaw), std::sin(lookYaw), 0);
