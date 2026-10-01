@@ -1,0 +1,72 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux (build + selftest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build pkg-config libsdl2-dev libglew-dev \
+            curl xvfb libgl1-mesa-dri libglx-mesa0
+
+      - name: Fetch arena collision meshes
+        run: ./tools/fetch_assets.sh
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j
+
+      # Headless GL 3.3 via Xvfb + Mesa; exits on its own once green
+      # (CARBALLER_ST_SHOW would keep it alive).
+      - name: Selftest
+        env:
+          CARBALLER_SELFTEST: "1"
+          CARBALLER_SOURCE_DIR: ${{ github.workspace }}
+        run: xvfb-run -a ./build/carballer
+
+  windows:
+    name: Windows (MSVC + vcpkg)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: vcpkg-binary-cache
+          key: vcpkg-windows-sdl2-glew-v1
+          restore-keys: |
+            vcpkg-windows-
+
+      - name: Install dependencies (vcpkg)
+        env:
+          VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-binary-cache,readwrite"
+        run: vcpkg install sdl2:x64-windows glew:x64-windows
+
+      - name: Configure
+        run: |
+          $vcpkg = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { $env:VCPKG_INSTALLATION_ROOT }
+          if (-not $vcpkg) { Write-Error "vcpkg installation root not found"; exit 1 }
+          cmake -B build "-DCMAKE_TOOLCHAIN_FILE=$vcpkg/scripts/buildsystems/vcpkg.cmake"
+
+      # Compile/link proof only: headless runners have no OpenGL 3.3.
+      - name: Build
+        run: cmake --build build --config Release --parallel

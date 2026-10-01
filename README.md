@@ -4,6 +4,7 @@
 ![](https://img.shields.io/badge/SDL2-2.x-000000)
 ![](https://img.shields.io/badge/OpenGL-3.3-5586A4?logo=opengl&logoColor=white)
 ![](https://img.shields.io/badge/physics-RocketSim-E65628)
+![](https://github.com/Prankiman/CarBaller/actions/workflows/build.yml/badge.svg)
 
 **A minimal, offline Rocket League freeplay trainer.** Drive, flip, dribble and
 shoot in a lightweight sandbox built on the open-source Rocket League physics
@@ -43,16 +44,32 @@ game.
 
 ### Requirements
 
-- Linux with OpenGL 3.3 support
-- CMake ≥ 3.16 and a C++20 compiler (GCC 12+ / Clang 15+)
-- SDL2 and GLEW development packages, pkg-config, curl
+- OpenGL 3.3-capable GPU
+- CMake ≥ 3.16 and a C++20 compiler (GCC 12+ / Clang 15+ / MSVC v143, VS 2022)
+- SDL2 and GLEW development packages
+- curl (first run only: arena collision-mesh download)
+
+Linux (Debian / Ubuntu):
 
 ```bash
-# Debian / Ubuntu
 sudo apt install build-essential cmake pkg-config libsdl2-dev libglew-dev curl
 ```
 
-### Instructions
+Windows — MSYS2, in a **MINGW64** shell (closest to the Linux flow):
+
+```bash
+pacman -S mingw-w64-x86_64-toolchain mingw-w64-x86_64-cmake \
+          mingw-w64-x86_64-SDL2 mingw-w64-x86_64-glew \
+          mingw-w64-x86_64-pkgconf git curl
+```
+
+Windows — Visual Studio 2022 + vcpkg:
+
+```powershell
+vcpkg install sdl2:x64-windows glew:x64-windows
+```
+
+### Instructions (Linux / MSYS2)
 
 ```bash
 git clone --recurse-submodules <repository-url> carballer
@@ -62,6 +79,22 @@ cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build -j"$(nproc)"
 ./build/carballer
 ```
+
+The same steps work in the MSYS2 MINGW64 shell — the binary is
+`build/carballer.exe`; launch it from that shell so the DLLs are on `PATH`.
+
+### Instructions (Visual Studio + vcpkg)
+
+```powershell
+git clone --recurse-submodules <repository-url> carballer
+cd carballer
+bash tools/fetch_assets.sh    # needs Git Bash on PATH (bash, curl, tar)
+cmake -B build "-DCMAKE_TOOLCHAIN_FILE=<vcpkg-root>\scripts\buildsystems\vcpkg.cmake"
+cmake --build build --config Release
+build\Release\carballer.exe
+```
+
+`<vcpkg-root>` is wherever vcpkg lives (e.g. `C:\vcpkg`).
 
 Cloned without submodules? Run `git submodule update --init --recursive` first.
 
