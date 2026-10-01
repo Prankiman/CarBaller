@@ -376,11 +376,14 @@ void appendStl(const std::vector<float>& tris, MeshBuilder& mb,
 }
 
 // Scale + placement against the real Octane hitbox (RocketSim config: 120.51
-// long, top at z=40.09 in car space, rear plane at x=-46.38). FK is chosen so
-// the roof ends just under the hitbox top ("hitbox barely taller than the
-// Fennec"), and FBACK puts the tail just behind the hitbox rear, peeking out.
+// long, front plane x=74.13, rear plane x=-46.38, top z=40.09 in car space).
+// FK is chosen so the roof ends just under the hitbox top ("hitbox barely
+// taller than the Fennec"); the body is then placed tail-out: FBACK puts the
+// rear ~26.6uu behind the box rear so the TAIL is what pokes out, with the
+// nose just inside the front plane (the model is longer than the hitbox, so
+// the overhang all goes to the back).
 constexpr float FK = 1.32f;       // model units -> car units (110.9 -> 146.4)
-constexpr float FBACK = -49.5f;   // body rear plane (3.1 uu behind the box)
+constexpr float FBACK = -73.0f;   // rear-most body point (tail pokes out)
 constexpr float FGX = -12.01f;    // model body center (x, width axis)
 constexpr float FGY = -36.4f;     // model rear-most point (y, length axis)
 constexpr float CAR_GROUND = -17.0f;  // wheel contact plane in car space
@@ -399,7 +402,7 @@ Col fennecBodyCol(const V3& p, const V3& n) {
     const bool raked = std::fabs(n.z) > 0.25f && std::fabs(n.z) < 0.94f &&
                        std::fabs(n.y) > 0.25f && p.z > 22.0f;
     const bool greenhouse = std::fabs(n.y) > 0.85f && n.z < 0.45f &&
-                            p.z > 25.1f && p.x > -37.3f && p.x < 28.6f;
+                            p.z > 25.1f && p.x > -60.8f && p.x < 5.1f;
     return (raked || greenhouse) ? glass : body;
 }
 
@@ -421,9 +424,9 @@ bool buildFennecWheels(MeshBuilder& front, MeshBuilder& back,
     const float rF = 19.5f / 2 * FK, rR = 22.0f / 2 * FK;
     const float lat = 26.2f;
     // Arch centers measured from the body STL's wheel openings, re-mapped
-    // through fennecBodyXf at the current FK/FBACK (1.082/-46 -> 1.32/-49.5).
-    const V3 mF(67.1f, 0, CAR_GROUND + rF);
-    const V3 mR(-22.5f, 0, CAR_GROUND + rR);
+    // through fennecBodyXf at the current FK/FBACK (1.082/-46 -> 1.32/-73).
+    const V3 mF(43.6f, 0, CAR_GROUND + rF);
+    const V3 mR(-46.0f, 0, CAR_GROUND + rR);
     const float cFx = -92.99f, cFy = 42.35f;   // print-layout centers
     const float cRx = -84.9f, cRy = -3.99f;
 
