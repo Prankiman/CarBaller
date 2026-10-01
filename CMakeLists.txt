@@ -26,6 +26,11 @@ endif()
 add_compile_definitions(SDL_MAIN_HANDLED)
 
 # --- RocketSim (submodule) ---
+# Upstream still declares cmake_minimum_required(VERSION 3.8), which CMake 4+
+# flags as deprecated (compatibility with <3.10 will be removed). This raises
+# the effective floor for the subdirectory without touching submodule sources;
+# it is an unknown (ignored) variable on CMake < 4.0.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
 add_subdirectory(RocketSim)
 
 # --- Dependencies: SDL2 + GLEW ---
