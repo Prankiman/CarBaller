@@ -14,6 +14,7 @@ struct RenderParams {
     float fovX = 110.0f * (float)M_PI / 180.0f;  // horizontal FOV (radians)
     bool showBallRing = true;
     bool showShadows = true;
+    bool showHitboxes = false;     // outline car/ball physics hitboxes
     float wallOpacity = 1.0f;   // 0..1 shell opacity when camera is outside
 };
 
@@ -21,6 +22,11 @@ class Renderer {
 public:
     bool init(const std::string& meshDir, const std::string& modelDir);
     void shutdown();
+
+    // Hitbox outline geometry (Settings > Graphics > Show Hitboxes).
+    // carSize/carOffset: the physics box in car-local uu (RocketSim config);
+    // ballRadius: collision radius in uu. Zeroed dims disable the outlines.
+    void setHitboxDims(const V3& carSize, const V3& carOffset, float ballRadius);
 
     void render(const RLCamera& cam, const RenderParams& p, const ParticleSystem& ps);
 
@@ -40,5 +46,6 @@ private:
     int w_ = 0, h_ = 0;
 
     GpuMesh particleMesh_;
+    GpuMesh hitboxCar_, hitboxBall_;
     float wheelSpin_ = 0;
 };

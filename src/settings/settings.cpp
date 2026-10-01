@@ -128,7 +128,7 @@ bool Settings::save(const std::string& path) const {
     j["graphics"] = {
         {"vsync", gfx.vsync}, {"fpsCap", gfx.fpsCap},
         {"particleQuality", gfx.particleQuality}, {"msaa", gfx.msaa},
-        {"wallOpacity", gfx.wallOpacity},
+        {"wallOpacity", gfx.wallOpacity}, {"showHitboxes", gfx.showHitboxes},
     };
 
     json jb;
@@ -197,6 +197,7 @@ bool Settings::load(const std::string& path) {
         gfx.particleQuality = c.value("particleQuality", gfx.particleQuality);
         gfx.msaa = c.value("msaa", gfx.msaa);
         gfx.wallOpacity = c.value("wallOpacity", gfx.wallOpacity);
+        gfx.showHitboxes = c.value("showHitboxes", gfx.showHitboxes);
     }
     if (j.contains("bindings")) {
         auto def = Bindings::defaults();

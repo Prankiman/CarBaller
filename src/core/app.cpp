@@ -199,6 +199,17 @@ int runApp(int argc, char** argv) {
         return 1;
     }
 
+    // ---- hitbox outline geometry (Settings > Graphics > Show Hitboxes):
+    // the exact physics box from the car's RocketSim config, and the
+    // ball's collision radius.
+    {
+        const RocketSim::CarConfig& cfg = a.sim.car()->config;
+        a.renderer.setHitboxDims(
+            V3(cfg.hitboxSize.x, cfg.hitboxSize.y, cfg.hitboxSize.z),
+            V3(cfg.hitboxPosOffset.x, cfg.hitboxPosOffset.y, cfg.hitboxPosOffset.z),
+            a.sim.arena()->ball->GetRadius());
+    }
+
     // ---- ball hit feedback
     // RocketSim re-fires the hit callback whenever the ball-car contact
     // manifold re-adds; while the ball rests/bounces on the car that can be
@@ -397,6 +408,7 @@ int runApp(int argc, char** argv) {
         rp.fovX = a.settings.cam.fov * (float)M_PI / 180.0f;
         rp.showBallRing = a.settings.cam.ballFloorProjection;
         rp.showShadows = true;
+        rp.showHitboxes = a.settings.gfx.showHitboxes;
         rp.wallOpacity = a.settings.gfx.wallOpacity;
         a.renderer.render(a.cam, rp, a.particles);
 

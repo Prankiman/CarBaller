@@ -1,5 +1,8 @@
 #include "renderer.h"
 
+#include "mesh_builder.h"
+
+#include <cmath>
 #include <cstdio>
 
 namespace {
@@ -95,6 +98,22 @@ void main() {
 const V3 SKY(0.31f, 0.35f, 0.45f);
 const V3 LIGHT_DIR(0.42f, -0.36f, -0.83f);  // light travels downward
 
+// One outline segment a->b as two crossed quads of width t. From any view
+// angle at least one of the two faces you, so the outline never vanishes
+// edge-on - no line-width/geometry-shader support needed.
+void addEdge(MeshBuilder& mb, const V3& a, const V3& b, float t, const Col& c) {
+    const V3 d = b - a;
+    const float len = d.len();
+    if (len < 1e-4f) return;
+    const V3 axis = d / len;
+    const V3 ref = std::fabs(axis.z) < 0.9f ? V3(0, 0, 1) : V3(1, 0, 0);
+    const V3 u = axis.cross(ref).norm();
+    const V3 v = axis.cross(u).norm();
+    const float h = t * 0.5f;
+    mb.quad(a + u * h, b + u * h, b - u * h, a - u * h, c);
+    mb.quad(a + v * h, b + v * h, b - v * h, a - v * h, c);
+}
+
 }  // namespace
 
 bool Renderer::init(const std::string& meshDir, const std::string& modelDir) {
@@ -109,8 +128,59 @@ bool Renderer::init(const std::string& meshDir, const std::string& modelDir) {
 void Renderer::shutdown() {
     assets_.destroy();
     particleMesh_.destroy();
+    hitboxCar_.destroy();
+    hitboxBall_.destroy();
     lit_.destroy();
     unlit_.destroy();
+}
+
+void Renderer::setHitboxDims(const V3& size, const V3& offset, float ballRadius) {
+    hitboxCar_.destroy();
+    hitboxBall_.destroy();
+    if (size.x <= 0 || size.y <= 0 || size.z <= 0 || ballRadius <= 0) return;
+
+    const Col carCol(1.0f, 0.58f, 0.10f, 0.95f);   // your car, RL orange
+    const Col ballCol(0.35f, 1.0f, 0.45f, 0.95f);  // ball green (RL overlays)
+    const float t = 2.2f;                          // line thickness (uu)
+
+    // ---- car: the 12 edges of the oriented physics box (config offset
+    // baked into car-local space, so the draw transform is just the frame).
+    MeshBuilder mb;
+    const V3 mn = offset - size * 0.5f;
+    const V3 mx = offset + size * 0.5f;
+    V3 v[8];
+    for (int i = 0; i < 8; i++)
+        v[i] = V3((i & 1) ? mx.x : mn.x, (i & 2) ? mx.y : mn.y, (i & 4) ? mx.z : mn.z);
+    static const int EDGES[12][2] = {
+        {0, 1}, {2, 3}, {4, 5}, {6, 7},   // along X
+        {0, 2}, {1, 3}, {4, 6}, {5, 7},   // along Y
+        {0, 4}, {1, 5}, {2, 6}, {3, 7},   // along Z
+    };
+    for (const auto& e : EDGES) addEdge(mb, v[e[0]], v[e[1]], t, carCol);
+    hitboxCar_.upload(mb.verts, mb.idx);
+
+    // ---- ball: a wireframe globe at the collision radius, outset a touch
+    // so the rings never z-fight the ball's skin.
+    mb.clear();
+    const float R = ballRadius + 2.0f;
+    auto circle = [&](const V3& c0, const V3& u, const V3& w, float r, int segs) {
+        for (int i = 0; i < segs; i++) {
+            const float a0 = float(i) / segs * 2.0f * (float)M_PI;
+            const float a1 = float(i + 1) / segs * 2.0f * (float)M_PI;
+            addEdge(mb, c0 + (u * std::cos(a0) + w * std::sin(a0)) * r,
+                        c0 + (u * std::cos(a1) + w * std::sin(a1)) * r, t, ballCol);
+        }
+    };
+    circle(V3(0, 0, 0), V3(1, 0, 0), V3(0, 1, 0), R, 28);          // equator
+    const float q = (float)M_PI * 0.25f;
+    const float rl = R * std::cos(q), rz = R * std::sin(q);
+    circle(V3(0, 0, rz), V3(1, 0, 0), V3(0, 1, 0), rl, 28);         // latitudes
+    circle(V3(0, 0, -rz), V3(1, 0, 0), V3(0, 1, 0), rl, 28);
+    for (int m = 0; m < 4; m++) {                                   // meridians
+        const float a = m * (float)M_PI * 0.25f;
+        circle(V3(0, 0, 0), V3(std::cos(a), std::sin(a), 0), V3(0, 0, 1), R, 28);
+    }
+    hitboxBall_.upload(mb.verts, mb.idx);
 }
 
 void Renderer::drawLit(const GpuMesh& mesh, const M4& model, int mode, float alpha) {
@@ -225,6 +295,21 @@ void Renderer::render(const RLCamera& cam, const RenderParams& p, const Particle
     if (p.showBallRing) {
         M4 m = M4::translate(V3(s.ballPos.x, s.ballPos.y, 4.0f));
         drawUnlit(assets_.indicator, m, 0.85f, false);
+    }
+
+    // ---------- physics hitbox outlines (Settings > Graphics).
+    // Drawn in the transparent pass, depth-tested but offset slightly
+    // toward the camera so box edges grazing the car body don't z-fight.
+    if (p.showHitboxes) {
+        glEnable(GL_POLYGON_OFFSET_FILL);
+        glPolygonOffset(-1.0f, -1.0f);
+        if (hitboxCar_.valid()) {
+            M4 model = M4::fromFrame(s.carF, s.carR, s.carU, s.carPos);
+            drawUnlit(hitboxCar_, model, 1.0f, false);
+        }
+        if (hitboxBall_.valid())
+            drawUnlit(hitboxBall_, M4::translate(s.ballPos), 1.0f, false);
+        glDisable(GL_POLYGON_OFFSET_FILL);
     }
 
     // ---------- particles (additive billboards)

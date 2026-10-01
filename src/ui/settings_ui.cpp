@@ -201,6 +201,10 @@ void drawGraphicsTab(GraphicsSettings& g, bool& changed) {
             "Opacity of the arena walls and ceiling (Rocket League keeps them "
             "see-through), so you can always see the car and ball through them. "
             "0 = invisible, 1 = solid. Default 0.30.");
+
+    check("Show Hitboxes", &g.showHitboxes, changed,
+          "Outline the physics hitboxes: an oriented box around the car "
+          "(the exact Octane hitbox) and a sphere around the ball.");
 }
 
 void drawBindingsTab(Settings& settings, InputSystem& input, bool& changed) {

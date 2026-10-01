@@ -94,6 +94,7 @@ struct GraphicsSettings {
     int particleQuality = 1;       // 0 low, 1 med, 2 high
     int msaa = 0;                  // 0/4/8
     float wallOpacity = 0.30f;     // 0..1 walls/ceiling transparency (always on)
+    bool showHitboxes = false;     // outline the car/ball physics hitboxes
 };
 
 struct Settings {
