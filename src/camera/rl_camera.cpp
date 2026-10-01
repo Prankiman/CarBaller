@@ -7,11 +7,6 @@ static V3 dirFromYawPitch(float yaw, float pitch) {
     return {cp * std::cos(yaw), cp * std::sin(yaw), std::sin(pitch)};
 }
 
-static float smoothK(float stiffness, float dt, float base, float scale) {
-    float k = base + stiffness * scale;
-    return 1.0f - std::exp(-k * dt);
-}
-
 void RLCamera::reset(const SimSnapshot& s, const CameraSettings& cs) {
     // Intentionally does NOT touch desired_: the player's ball-cam choice
     // survives respawns/position presets (RL never flips the mode for you),
@@ -174,23 +169,29 @@ void RLCamera::update(float dt, const CameraSettings& cs, const SimSnapshot& s,
     // behind the car at takeoff instead of climbing rigidly with it. Only
     // the vertical axis gets that treatment - horizontal follow stays tight
     // so fast forward flight doesn't drag the camera far behind the car.
-    const float k = smoothK(cs.stiffness, dt, 1.5f, 14.0f);
-    const float kz = s.onGround ? k : k * 0.5f;
+    //
+    // Everything here is a per-SECOND rate; the per-frame factor is always
+    // 1 - exp(-rate * dt), which stays in (0,1) for any speed. Adding to the
+    // factor instead of the rate lets it exceed 1 and the eye diverges.
+    const float followRate = 1.5f + cs.stiffness * 14.0f;
+    const float rateZ = s.onGround ? followRate : followRate * 0.5f;
 
-    // A plain exponential follower settles v/k behind a moving rig - at boost
-    // speed (2300 uu/s, default stiffness) that was a whole camera distance,
-    // so the eye sat far from the car while boosting and only crept back
-    // after the car slowed. The rig-speed term in the horizontal rate makes
-    // that lag saturate at kRigLagCap uu instead: rigid at speed like RL,
-    // while rest and low-speed recentering keep the original stiffness
-    // response. Vertical follow is untouched - the jump/aerial linger is the
-    // part RL's stiffness actually does.
+    // A plain exponential follower settles v/rate behind a moving rig - at
+    // boost speed (2300 uu/s, default stiffness) that was a whole camera
+    // distance, so the eye sat far from the car while boosting and only
+    // crept back after the car slowed. The rig-speed term in the horizontal
+    // rate makes that lag saturate at kRigLagCap uu instead: rigid at speed
+    // like RL, while rest and low-speed recentering keep the original
+    // stiffness response. Vertical follow is untouched - the jump/aerial
+    // linger is the part RL's stiffness actually does.
     const float dx = wantEye.x - prevWantEye_.x;
     const float dy = wantEye.y - prevWantEye_.y;
     const float rigSpeed2d = std::sqrt(dx * dx + dy * dy) / std::max(dt, 1e-4f);
-    const float kx = k + rigSpeed2d / kRigLagCap;
+    const float rateX = followRate + rigSpeed2d / kRigLagCap;
     prevWantEye_ = wantEye;
 
+    const float kx = 1.0f - std::exp(-rateX * dt);
+    const float kz = 1.0f - std::exp(-rateZ * dt);
     if (!hasSmoothed_) {
         smoothedEye_ = wantEye;
         hasSmoothed_ = true;
