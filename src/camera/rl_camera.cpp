@@ -59,11 +59,13 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
     outTarget = outEye + dir * std::max(toT.len(), 1000.0f);
 }
 
-// After leaving a surface the car cam keeps following the nose for this long
-// before locking the flight's frame of reference: the player's initial
-// pitch/steer out of the takeoff still moves the camera point, and the
-// rear/front axis at the end of the window is what holds for the rest of the
-// flight (RL gives the takeoff maneuver this much room).
+// After leaving a surface the camera first HOLDS the takeoff heading for
+// kAirDelay - no nose-following at all yet, so a jump or flip straight off
+// the ground cannot swing it. It then follows the nose for kAirFollowTime
+// (the player's initial pitch/steer still moves the camera point), and the
+// rear/front axis at the end of that window is locked in for the rest of
+// the flight (RL gives the takeoff maneuver this much room).
+static constexpr float kAirDelay = 1.0f;
 static constexpr float kAirFollowTime = 0.5f;
 
 // Cap (uu) on how far the smoothed eye trails the ideal rig horizontally
@@ -73,10 +75,11 @@ static constexpr float kRigLagCap = 40.0f;
 void RLCamera::computeCarCam(const CameraSettings& cs, const SimSnapshot& s,
                              float dt, V3& outEye, V3& outTarget) {
     // Grounded = the camera sits behind the rear, following the nose
-    // heading. Airborne = the follow stays live for kAirFollowTime, then
-    // the rear/front axis at that instant is locked in and held: pitch, roll
-    // and yaw afterwards only translate the camera with the car - they never
-    // swing it around - until the car grounds again and tracking resumes.
+    // heading. Airborne = the heading is held for kAirDelay, then the
+    // follow stays live for kAirFollowTime, then the rear/front axis at
+    // that instant is locked in and held: pitch, roll and yaw afterwards
+    // only translate the camera with the car - they never swing it around -
+    // until the car grounds again and tracking resumes.
     const float fxy = std::sqrt(s.carF.x * s.carF.x + s.carF.y * s.carF.y);
 
     bool track;
@@ -86,15 +89,23 @@ void RLCamera::computeCarCam(const CameraSettings& cs, const SimSnapshot& s,
         track = true;
     } else if (locked_) {
         track = false;
-    } else if ((airTime_ += dt) >= kAirFollowTime) {
-        // Window over: determine the camera point from the rear/front axis
-        // of this moment (the tracked heading is kept when the nose points
-        // straight up/down, where the horizontal projection is no direction).
-        if (fxy > 0.15f) carYaw_ = std::atan2(s.carF.y, s.carF.x);
-        locked_ = true;
-        track = false;
     } else {
-        track = true;
+        airTime_ += dt;
+        if (airTime_ < kAirDelay) {
+            // Takeoff delay: frozen on the heading the car left the ground
+            // with - the nose cannot move the camera yet.
+            track = false;
+        } else if (airTime_ >= kAirDelay + kAirFollowTime) {
+            // Window over: determine the camera point from the rear/front
+            // axis of this moment (the tracked heading is kept when the nose
+            // points straight up/down, where the horizontal projection is no
+            // direction).
+            if (fxy > 0.15f) carYaw_ = std::atan2(s.carF.y, s.carF.x);
+            locked_ = true;
+            track = false;
+        } else {
+            track = true;
+        }
     }
 
     // Nose projected on the ground plane: well-defined on floor, ceiling

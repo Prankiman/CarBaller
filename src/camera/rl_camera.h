@@ -43,10 +43,10 @@ private:
     float pitchOff_ = 0;
     float swivelIdle_ = 0;       // seconds since the last swivel input
 
-    // Car-cam heading: follows the nose while grounded and for the first
-    // 0.5s of flight (the takeoff maneuver still moves the camera point);
-    // then the rear/front axis at that instant is locked in and held until
-    // the car touches ground again.
+    // Car-cam heading: follows the nose while grounded. In the air it is
+    // held at the takeoff axis for kAirDelay, follows the nose for
+    // kAirFollowTime, then the rear/front axis at that instant is locked in
+    // and held until the car touches ground again.
     float carYaw_ = 0;
     float airTime_ = 0;          // seconds since leaving the surface
     bool locked_ = false;        // air heading determined for this flight
