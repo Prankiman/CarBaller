@@ -93,6 +93,10 @@ int runApp(int argc, char** argv) {
     (void)argc;
     (void)argv;
 
+    // SDL_MAIN_HANDLED: we provide main() ourselves, so tell SDL its video
+    // subsystem is free to initialize (required on Windows).
+    SDL_SetMainReady();
+
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC) != 0) {
         std::fprintf(stderr, "[app] SDL_Init failed: %s\n", SDL_GetError());
         return 1;
