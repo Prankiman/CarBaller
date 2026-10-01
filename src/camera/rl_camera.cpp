@@ -31,6 +31,7 @@ void RLCamera::reset(const SimSnapshot& s, const CameraSettings& cs) {
     else
         computeCarCam(cs, s, 0.0f, e, t);
     smoothedEye_ = e;
+    prevWantEye_ = e;
     hasSmoothed_ = true;
     smoothTarget_ = t;
     prevWantT_ = t;
@@ -69,6 +70,10 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
 // rear/front axis at the end of the window is what holds for the rest of the
 // flight (RL gives the takeoff maneuver this much room).
 static constexpr float kAirFollowTime = 0.5f;
+
+// Cap (uu) on how far the smoothed eye trails the ideal rig horizontally
+// while the rig is moving - the lag asymptotes to this value at high speed.
+static constexpr float kRigLagCap = 40.0f;
 
 void RLCamera::computeCarCam(const CameraSettings& cs, const SimSnapshot& s,
                              float dt, V3& outEye, V3& outTarget) {
@@ -171,12 +176,27 @@ void RLCamera::update(float dt, const CameraSettings& cs, const SimSnapshot& s,
     // so fast forward flight doesn't drag the camera far behind the car.
     const float k = smoothK(cs.stiffness, dt, 1.5f, 14.0f);
     const float kz = s.onGround ? k : k * 0.5f;
+
+    // A plain exponential follower settles v/k behind a moving rig - at boost
+    // speed (2300 uu/s, default stiffness) that was a whole camera distance,
+    // so the eye sat far from the car while boosting and only crept back
+    // after the car slowed. The rig-speed term in the horizontal rate makes
+    // that lag saturate at kRigLagCap uu instead: rigid at speed like RL,
+    // while rest and low-speed recentering keep the original stiffness
+    // response. Vertical follow is untouched - the jump/aerial linger is the
+    // part RL's stiffness actually does.
+    const float dx = wantEye.x - prevWantEye_.x;
+    const float dy = wantEye.y - prevWantEye_.y;
+    const float rigSpeed2d = std::sqrt(dx * dx + dy * dy) / std::max(dt, 1e-4f);
+    const float kx = k + rigSpeed2d / kRigLagCap;
+    prevWantEye_ = wantEye;
+
     if (!hasSmoothed_) {
         smoothedEye_ = wantEye;
         hasSmoothed_ = true;
     } else {
-        smoothedEye_.x += (wantEye.x - smoothedEye_.x) * k;
-        smoothedEye_.y += (wantEye.y - smoothedEye_.y) * k;
+        smoothedEye_.x += (wantEye.x - smoothedEye_.x) * kx;
+        smoothedEye_.y += (wantEye.y - smoothedEye_.y) * kx;
         smoothedEye_.z += (wantEye.z - smoothedEye_.z) * kz;
     }
 

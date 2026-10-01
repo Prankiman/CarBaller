@@ -51,6 +51,7 @@ private:
     float airTime_ = 0;          // seconds since leaving the surface
     bool locked_ = false;        // air heading determined for this flight
     V3 smoothedEye_{0, 0, 0};
+    V3 prevWantEye_{0, 0, 0};    // previous ideal eye, for rig speed
     bool hasSmoothed_ = false;
 
     // One-euro filtered look-at point: the aim follows a resting/bouncing
