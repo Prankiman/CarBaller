@@ -275,7 +275,8 @@ int runApp(int argc, char** argv) {
         // ball cam mode
         if (a.settings.cam.ballCamToggle) {
             if (a.input.pressed(Action::BallCam))
-                a.cam.setMode(a.cam.mode() == CamMode::Ball ? CamMode::Car : CamMode::Ball);
+                a.cam.setMode(a.cam.desiredMode() == CamMode::Ball ? CamMode::Car
+                                                                   : CamMode::Ball);
         } else {
             a.cam.setMode(a.input.held(Action::BallCam) ? CamMode::Ball : CamMode::Car);
         }
@@ -359,7 +360,7 @@ int runApp(int argc, char** argv) {
         }
 
         if (a.camResetPending) {
-            a.cam.reset(snap);
+            a.cam.reset(snap, a.settings.cam);
             a.camResetPending = false;
         }
 

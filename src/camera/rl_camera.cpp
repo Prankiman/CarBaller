@@ -12,18 +12,22 @@ static float smoothK(float stiffness, float dt, float base, float scale) {
     return 1.0f - std::exp(-k * dt);
 }
 
-void RLCamera::reset(const SimSnapshot& s) {
-    desired_ = CamMode::Ball;
-    blend_ = 1.0f;
+void RLCamera::reset(const SimSnapshot& s, const CameraSettings& cs) {
+    // Intentionally does NOT touch desired_: the player's ball-cam choice
+    // survives respawns/position presets (RL never flips the mode for you),
+    // and before the first input this starts in ball cam like RL does.
     yawOff_ = pitchOff_ = 0;
     swivelIdle_ = 0;
-    carYaw_ = std::atan2(s.carF.y, s.carF.x);
+    carYaw_ = fwdYawRaw_ = std::atan2(s.carF.y, s.carF.x);
+    blend_ = (desired_ == CamMode::Ball) ? 1.0f : 0.0f;  // snap, no animation
     hasSmoothed_ = false;
     shakeAmp_ = 0;
 
-    CameraSettings cs;  // defaults
     V3 e, t;
-    computeBallCam(cs, s, e, t);
+    if (blend_ > 0.5f)
+        computeBallCam(cs, s, e, t);
+    else
+        computeCarCam(cs, s, 0.0f, e, t);
     smoothedEye_ = e;
     hasSmoothed_ = true;
     smoothTarget_ = t;
@@ -59,20 +63,30 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
 
 void RLCamera::computeCarCam(const CameraSettings& cs, const SimSnapshot& s,
                              float dt, V3& outEye, V3& outTarget) {
-    float desiredYaw = std::atan2(s.carF.y, s.carF.x);
+    // Heading = the car's nose projected onto the ground plane. That
+    // projection degenerates when the nose points straight up/down (fast
+    // aerials, freestyle), where atan2() of the near-zero vector used to
+    // whip the camera 180 degrees mid-flight. Weight the update by the
+    // projection's length so vertical flight holds the last good heading -
+    // the view stays on the pre-aerial heading while you climb, which is
+    // what keeps the camera behind the car (and lets you keep seeing where
+    // you're going) through air roll, exactly like Rocket League.
+    const float fxy = std::sqrt(s.carF.x * s.carF.x + s.carF.y * s.carF.y);
+    const float w = clampf((fxy - 0.15f) / 0.35f, 0.0f, 1.0f);
+    if (w > 0.0f) {
+        const float rawYaw = std::atan2(s.carF.y, s.carF.x);
+        fwdYawRaw_ += wrapAngle(rawYaw - fwdYawRaw_) * w;
+    }
 
-    // Follow rate: instant-ish on the ground, slower in the air, very slow
-    // while flipping so the camera doesn't whip around when the rear moves.
-    bool flipping = s.flipping || (!s.onGround && s.carAngVel.len() > 3.0f);
-    float rate;
-    if (s.onGround)
-        rate = 12.0f;
-    else if (flipping)
-        rate = 1.8f;
-    else
-        rate = 7.0f;
+    // Follow rate: locked behind the rear on the ground. In the air it eases
+    // off so redirects swing the view around gradually, fading to the flip
+    // rate while spinning or flipping so it never whips; roll and pitch alone
+    // never move it at all (heading is yaw-only).
+    const float spin = clampf((s.carAngVel.len() - 3.0f) / 3.0f, 0.0f, 1.0f);
+    const float airT = s.flipping ? 1.0f : spin;
+    const float rate = s.onGround ? 12.0f : lerpf(5.0f, 1.8f, airT);
 
-    float delta = wrapAngle(desiredYaw - carYaw_);
+    const float delta = wrapAngle(fwdYawRaw_ - carYaw_);
     carYaw_ += clampf(delta, -rate * dt, rate * dt);
 
     float lookYaw = carYaw_ + yawOff_;
@@ -132,12 +146,21 @@ void RLCamera::update(float dt, const CameraSettings& cs, const SimSnapshot& s,
     V3 wantEye = V3::lerp(carEye, ballEye, blend_);
     V3 wantTarget = V3::lerp(carTarget, ballTarget, blend_);
 
-    // ---- stiffness: position follow smoothing
+    // ---- stiffness: position follow smoothing. Rocket League's stiffness
+    // shows up as world-space lag: jumps displace the camera and it
+    // recenters, and during an aerial the eye lingers near the spot that was
+    // behind the car at takeoff instead of climbing rigidly with it. Only
+    // the vertical axis gets that treatment - horizontal follow stays tight
+    // so fast forward flight doesn't drag the camera far behind the car.
+    const float k = smoothK(cs.stiffness, dt, 1.5f, 14.0f);
+    const float kz = s.onGround ? k : k * 0.5f;
     if (!hasSmoothed_) {
         smoothedEye_ = wantEye;
         hasSmoothed_ = true;
     } else {
-        smoothedEye_ += (wantEye - smoothedEye_) * smoothK(cs.stiffness, dt, 1.5f, 14.0f);
+        smoothedEye_.x += (wantEye.x - smoothedEye_.x) * k;
+        smoothedEye_.y += (wantEye.y - smoothedEye_.y) * k;
+        smoothedEye_.z += (wantEye.z - smoothedEye_.z) * kz;
     }
 
     // ---- one-euro filter on the look-at point.
@@ -156,7 +179,11 @@ void RLCamera::update(float dt, const CameraSettings& cs, const SimSnapshot& s,
         const float rawDeriv = (wantTarget - prevWantT_).len() / std::max(dt, 1e-4f);
         prevWantT_ = wantTarget;
         derivS_ += (rawDeriv - derivS_) * (1.0f - std::exp(-2.0f * (float)M_PI * 3.0f * dt));
-        const float fc = 1.2f + 0.01f * derivS_;          // Hz
+        // Car cam aims from the car itself (never the ball), so track it
+        // tightly - the view stays on the rear panel through maneuvers.
+        // Ball cam keeps the low floor that kills the resting ball's
+        // contact chatter.
+        const float fc = 1.2f + 1.8f * (1.0f - blend_) + 0.01f * derivS_;  // Hz
         const float k = 1.0f - std::exp(-2.0f * (float)M_PI * fc * dt);
         smoothTarget_ += d * k;
     }

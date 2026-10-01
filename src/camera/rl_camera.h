@@ -11,7 +11,9 @@ enum class CamMode { Car = 0, Ball = 1 };
 
 class RLCamera {
 public:
-    void reset(const SimSnapshot& s);
+    // Re-anchors the eye at the snapshot. Keeps the current camera mode -
+    // repositioning the car must never flip ball cam on (or off) for you.
+    void reset(const SimSnapshot& s, const CameraSettings& cs);
 
     void setMode(CamMode m) { desired_ = m; }
     CamMode mode() const { return blend_ > 0.5f ? CamMode::Ball : CamMode::Car; }
@@ -42,6 +44,7 @@ private:
     float swivelIdle_ = 0;       // seconds since the last swivel input
 
     float carYaw_ = 0;          // smoothed horizontal follow (car cam)
+    float fwdYawRaw_ = 0;       // desired heading, held stable near vertical
     V3 smoothedEye_{0, 0, 0};
     bool hasSmoothed_ = false;
 
