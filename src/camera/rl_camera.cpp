@@ -19,7 +19,8 @@ void RLCamera::reset(const SimSnapshot& s, const CameraSettings& cs) {
     yawOff_ = pitchOff_ = 0;
     swivelIdle_ = 0;
     carYaw_ = std::atan2(s.carF.y, s.carF.x);
-    wasGrounded_ = s.onGround;
+    airTime_ = 0;
+    locked_ = false;
     blend_ = (desired_ == CamMode::Ball) ? 1.0f : 0.0f;  // snap, no animation
     hasSmoothed_ = false;
     shakeAmp_ = 0;
@@ -62,34 +63,48 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
     outTarget = outEye + dir * std::max(toT.len(), 1000.0f);
 }
 
+// After leaving a surface the car cam keeps following the nose for this long
+// before locking the flight's frame of reference: the player's initial
+// pitch/steer out of the takeoff still moves the camera point, and the
+// rear/front axis at the end of the window is what holds for the rest of the
+// flight (RL gives the takeoff maneuver this much room).
+static constexpr float kAirFollowTime = 0.5f;
+
 void RLCamera::computeCarCam(const CameraSettings& cs, const SimSnapshot& s,
                              float dt, V3& outEye, V3& outTarget) {
-    // The whole air rule, deliberately simple: grounded = the camera sits
-    // behind the rear, following the nose heading. On the instant the car
-    // leaves a surface - any surface - the rear/front axis at that instant
-    // becomes the frame of reference: the heading snaps onto the nose axis
-    // (so ground follow-lag from a hard turn or an unfinished landing
-    // realignment can't skew the flight) and is then held, so the eye keeps
-    // the position relative to the car it had at takeoff. Pitch, roll and
-    // yaw in flight only translate the camera with the car - they never
-    // swing it around - and it re-anchors the instant the car grounds again.
+    // Grounded = the camera sits behind the rear, following the nose
+    // heading. Airborne = the follow stays live for kAirFollowTime, then
+    // the rear/front axis at that instant is locked in and held: pitch, roll
+    // and yaw afterwards only translate the camera with the car - they never
+    // swing it around - until the car grounds again and tracking resumes.
     const float fxy = std::sqrt(s.carF.x * s.carF.x + s.carF.y * s.carF.y);
+
+    bool track;
     if (s.onGround) {
-        // Nose projected on the ground plane: well-defined on floor, ceiling
-        // and walls, degenerate only while driving straight up a wall, where
-        // the heading is simply held instead of snapping on noise.
-        if (fxy > 0.15f) {
-            const float desiredYaw = std::atan2(s.carF.y, s.carF.x);
-            const float delta = wrapAngle(desiredYaw - carYaw_);
-            carYaw_ += delta * std::min(12.0f * dt, 1.0f);
-        }
-    } else if (wasGrounded_ && fxy > 0.15f) {
-        // Takeoff: anchor on the rear/front axis of this exact moment (the
-        // held value is kept when the nose points straight up/down, where
-        // the horizontal projection carries no direction).
-        carYaw_ = std::atan2(s.carF.y, s.carF.x);
+        airTime_ = 0;
+        locked_ = false;
+        track = true;
+    } else if (locked_) {
+        track = false;
+    } else if ((airTime_ += dt) >= kAirFollowTime) {
+        // Window over: determine the camera point from the rear/front axis
+        // of this moment (the tracked heading is kept when the nose points
+        // straight up/down, where the horizontal projection is no direction).
+        if (fxy > 0.15f) carYaw_ = std::atan2(s.carF.y, s.carF.x);
+        locked_ = true;
+        track = false;
+    } else {
+        track = true;
     }
-    wasGrounded_ = s.onGround;
+
+    // Nose projected on the ground plane: well-defined on floor, ceiling
+    // and walls, degenerate only while the nose points straight up or down,
+    // where the heading is simply held instead of snapping on noise.
+    if (track && fxy > 0.15f) {
+        const float desiredYaw = std::atan2(s.carF.y, s.carF.x);
+        const float delta = wrapAngle(desiredYaw - carYaw_);
+        carYaw_ += delta * std::min(12.0f * dt, 1.0f);
+    }
 
     float lookYaw = carYaw_ + yawOff_;
     V3 fwd(std::cos(lookYaw), std::sin(lookYaw), 0);
