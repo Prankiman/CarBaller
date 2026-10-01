@@ -43,8 +43,10 @@ private:
     float pitchOff_ = 0;
     float swivelIdle_ = 0;       // seconds since the last swivel input
 
-    float carYaw_ = 0;          // smoothed horizontal follow (car cam)
-    float fwdYawRaw_ = 0;       // desired heading, held stable near vertical
+    // Car-cam heading: follows the nose while grounded, frozen at the last
+    // grounded value for the whole airborne phase (RL doesn't move the
+    // camera's frame of reference until the car touches ground again).
+    float carYaw_ = 0;
     V3 smoothedEye_{0, 0, 0};
     bool hasSmoothed_ = false;
 

@@ -18,7 +18,7 @@ void RLCamera::reset(const SimSnapshot& s, const CameraSettings& cs) {
     // and before the first input this starts in ball cam like RL does.
     yawOff_ = pitchOff_ = 0;
     swivelIdle_ = 0;
-    carYaw_ = fwdYawRaw_ = std::atan2(s.carF.y, s.carF.x);
+    carYaw_ = std::atan2(s.carF.y, s.carF.x);
     blend_ = (desired_ == CamMode::Ball) ? 1.0f : 0.0f;  // snap, no animation
     hasSmoothed_ = false;
     shakeAmp_ = 0;
@@ -63,31 +63,24 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
 
 void RLCamera::computeCarCam(const CameraSettings& cs, const SimSnapshot& s,
                              float dt, V3& outEye, V3& outTarget) {
-    // Heading = the car's nose projected onto the ground plane. That
-    // projection degenerates when the nose points straight up/down (fast
-    // aerials, freestyle), where atan2() of the near-zero vector used to
-    // whip the camera 180 degrees mid-flight. Weight the update by the
-    // projection's length so vertical flight holds the last good heading -
-    // the view stays on the pre-aerial heading while you climb, which is
-    // what keeps the camera behind the car (and lets you keep seeing where
-    // you're going) through air roll, exactly like Rocket League.
-    const float fxy = std::sqrt(s.carF.x * s.carF.x + s.carF.y * s.carF.y);
-    const float w = clampf((fxy - 0.15f) / 0.35f, 0.0f, 1.0f);
-    if (w > 0.0f) {
-        const float rawYaw = std::atan2(s.carF.y, s.carF.x);
-        fwdYawRaw_ += wrapAngle(rawYaw - fwdYawRaw_) * w;
+    // The whole air rule, deliberately simple: grounded = the camera sits
+    // behind the rear, following the nose heading. Airborne = the heading is
+    // held at whatever it was when the car last touched floor/ceiling, so the
+    // eye keeps the exact position relative to the car it had at takeoff.
+    // Pitch, roll and yaw in flight only translate the camera with the car -
+    // they never swing it around - and it re-anchors the instant the car
+    // grounds again.
+    if (s.onGround) {
+        // Nose projected on the ground plane: well-defined on floor, ceiling
+        // and walls, degenerate only while driving straight up a wall, where
+        // the heading is simply held instead of snapping on noise.
+        const float fxy = std::sqrt(s.carF.x * s.carF.x + s.carF.y * s.carF.y);
+        if (fxy > 0.15f) {
+            const float desiredYaw = std::atan2(s.carF.y, s.carF.x);
+            const float delta = wrapAngle(desiredYaw - carYaw_);
+            carYaw_ += delta * std::min(12.0f * dt, 1.0f);
+        }
     }
-
-    // Follow rate: locked behind the rear on the ground. In the air it eases
-    // off so redirects swing the view around gradually, fading to the flip
-    // rate while spinning or flipping so it never whips; roll and pitch alone
-    // never move it at all (heading is yaw-only).
-    const float spin = clampf((s.carAngVel.len() - 3.0f) / 3.0f, 0.0f, 1.0f);
-    const float airT = s.flipping ? 1.0f : spin;
-    const float rate = s.onGround ? 12.0f : lerpf(5.0f, 1.8f, airT);
-
-    const float delta = wrapAngle(fwdYawRaw_ - carYaw_);
-    carYaw_ += clampf(delta, -rate * dt, rate * dt);
 
     float lookYaw = carYaw_ + yawOff_;
     V3 fwd(std::cos(lookYaw), std::sin(lookYaw), 0);
