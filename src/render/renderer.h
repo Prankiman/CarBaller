@@ -19,7 +19,7 @@ struct RenderParams {
 
 class Renderer {
 public:
-    bool init(const std::string& meshDir);
+    bool init(const std::string& meshDir, const std::string& modelDir);
     void shutdown();
 
     void render(const RLCamera& cam, const RenderParams& p, const ParticleSystem& ps);

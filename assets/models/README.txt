@@ -1,0 +1,4 @@
+Rocket League Fennec by PsychItsMike on Thingiverse: https://www.thingiverse.com/thing:4195502
+
+Summary:
+This is a printable model of a Fennec from Rocket LeagueCredit to Adam Williams for the original model (https://www.artstation.com/notadam)I cleaned up the shells and made it solid for printing, thickened the wing, and used some Dieci wheels I had from another design. Just print the Fennec as is, supports shouldn't be needed, then print 2 of each type of wheel and glue together.Check out my collection for more car models:https://www.thingiverse.com/PsychItsMike/collections/print-in-place-with-moving-wheels-no-supports-car-collection

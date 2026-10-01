@@ -324,9 +324,139 @@ void buildBallTexture(Texture2D& tex) {
     tex.create(W, H, img.px.data(), /*repeat=*/true, /*mips=*/true);
 }
 
+// ---------------------------------------------------------------- Fennec STL
+// Model from Thingiverse #4195502 (CC BY-NC-SA, see assets/models/LICENSE.txt):
+// binary STL, +Y forward, +X width (body centered on FGX), Z up, ground z=0.
+bool readStl(const std::string& path, std::vector<float>& out) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::fseek(f, 0, SEEK_END);
+    long sz = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (sz < 84) { std::fclose(f); return false; }
+    uint8_t hdr[84];
+    if (std::fread(hdr, 1, 84, f) != 84) { std::fclose(f); return false; }
+    uint32_t n = 0;
+    std::memcpy(&n, hdr + 80, 4);
+    if (n == 0 || n > 2000000 || long(84) + long(n) * 50 != sz) {
+        std::fclose(f);
+        return false;   // not a binary STL (ascii unsupported: falls back)
+    }
+    out.resize(size_t(n) * 9);
+    for (uint32_t i = 0; i < n; i++) {
+        uint8_t rec[50];
+        if (std::fread(rec, 1, 50, f) != 50) { std::fclose(f); return false; }
+        float v[12];
+        std::memcpy(v, rec, 48);   // skip the stored normal, recompute below
+        for (int k = 0; k < 3; k++)
+            for (int a = 0; a < 3; a++)
+                out[size_t(i) * 9 + size_t(k) * 3 + a] = v[3 + k * 3 + a];
+    }
+    std::fclose(f);
+    return true;
+}
+
+// Transform + paint raw STL triangles into the mesh (flat normals per face).
+template <class Xf, class ColFn>
+void appendStl(const std::vector<float>& tris, MeshBuilder& mb,
+               const Xf& xf, const ColFn& colOf) {
+    for (size_t i = 0; i + 8 < tris.size(); i += 9) {
+        V3 a = xf(V3(tris[i], tris[i + 1], tris[i + 2]));
+        V3 b = xf(V3(tris[i + 3], tris[i + 4], tris[i + 5]));
+        V3 c = xf(V3(tris[i + 6], tris[i + 7], tris[i + 8]));
+        V3 n = (b - a).cross(c - a);
+        if (n.len() < 1e-12f) continue;
+        n = n.norm();
+        Col col = colOf((a + b + c) * (1.0f / 3.0f), n);
+        uint32_t i0 = mb.addVert(a, n, 0, 0, col);
+        uint32_t i1 = mb.addVert(b, n, 0, 0, col);
+        uint32_t i2 = mb.addVert(c, n, 0, 0, col);
+        mb.triOriented(i0, i1, i2, n);
+    }
+}
+
+constexpr float FK = 1.082f;      // model units -> car units (110.9 -> 120)
+constexpr float FGX = -12.01f;    // model body center (x, width axis)
+constexpr float FGY = -36.4f;     // model rear-most point (y, length axis)
+constexpr float CAR_GROUND = -17.0f;  // wheel contact plane in car space
+
+// Model -> car: forward +Y -> +X (yaw -90 deg), width X -> -Y, ground to -17.
+V3 fennecBodyXf(const V3& p) {
+    return V3((p.y - FGY) * FK - 46.0f, -(p.x - FGX) * FK, p.z * FK + CAR_GROUND);
+}
+
+// Paint: body gray; glass on raked screens and the upper greenhouse.
+Col fennecBodyCol(const V3& p, const V3& n) {
+    const Col body(0.78f, 0.79f, 0.81f, 1);
+    const Col glass(0.05f, 0.065f, 0.09f, 1);
+    const bool raked = std::fabs(n.z) > 0.25f && std::fabs(n.z) < 0.94f &&
+                       std::fabs(n.y) > 0.25f && p.z > 15.0f;
+    const bool greenhouse = std::fabs(n.y) > 0.85f && n.z < 0.45f &&
+                            p.z > 17.5f && p.x > -36.0f && p.x < 18.0f;
+    return (raked || greenhouse) ? glass : body;
+}
+
+bool buildFennecBody(MeshBuilder& mb, const std::string& modelDir) {
+    std::vector<float> tris;
+    if (!readStl(modelDir + "/fennec.stl", tris)) return false;
+    appendStl(tris, mb, fennecBodyXf, fennecBodyCol);
+    return !mb.verts.empty();
+}
+
+// Wheels: separate STLs lying flat (axle = Z, layout center (cx,cy)); stood up
+// so the axle runs along Y, painted in radial bands (tire/rim/hub).
+bool buildFennecWheels(MeshBuilder& front, MeshBuilder& back,
+                       WheelMount mounts[4], const std::string& modelDir) {
+    std::vector<float> wf, wr;
+    if (!readStl(modelDir + "/front_wheel.stl", wf)) return false;
+    if (!readStl(modelDir + "/rear_wheel.stl", wr)) return false;
+
+    const float rF = 19.5f / 2 * FK, rR = 22.0f / 2 * FK;
+    const float lat = 21.5f;
+    // Arch centers measured from the body STL's wheel openings.
+    const V3 mF(49.6f, 0, CAR_GROUND + rF);
+    const V3 mR(-23.9f, 0, CAR_GROUND + rR);
+    const float cFx = -92.99f, cFy = 42.35f;   // print-layout centers
+    const float cRx = -84.9f, cRy = -3.99f;
+
+    mounts[0] = {V3(mF.x,  lat, mF.z), rF, true};
+    mounts[1] = {V3(mF.x, -lat, mF.z), rF, true};
+    mounts[2] = {V3(mR.x,  lat, mR.z), rR, false};
+    mounts[3] = {V3(mR.x, -lat, mR.z), rR, false};
+
+    // The mesh must stay CENTERED at the origin: the renderer translates it to
+    // the mount and spins it about its own axle. Baking the mount in here would
+    // double the offset and make the wheels orbit the car instead of spinning.
+    auto wheelXf = [](const V3& p, float cx, float cy, int side) {
+        float dx = p.x - cx, dy = p.y - cy, dz = p.z - 5.095f;
+        float x = dx, y = -dz, z = dy;      // stand up: axle Z -> Y
+        if (side < 0) { x = -x; y = -y; }   // far side: 180 deg about Z
+        return V3(x * FK, y * FK, z * FK);
+    };
+    auto wheelCol = [](float r) {
+        return [r](const V3& p, const V3&) {
+            // centered mesh: radial distance from the axle (Y axis)
+            float rad = std::sqrt(p.x * p.x + p.z * p.z);
+            if (rad > 0.85f * r) return Col(0.065f, 0.065f, 0.075f, 1);  // tire
+            if (rad > 0.30f * r) return Col(0.58f, 0.60f, 0.63f, 1);     // rim
+            return Col(0.17f, 0.18f, 0.20f, 1);                          // hub
+        };
+    };
+
+    for (int s = 1; s >= -1; s -= 2) {
+        appendStl(wf, front,
+                  [&](const V3& p) { return wheelXf(p, cFx, cFy, s); },
+                  wheelCol(rF));
+        appendStl(wr, back,
+                  [&](const V3& p) { return wheelXf(p, cRx, cRy, s); },
+                  wheelCol(rR));
+    }
+    return !front.verts.empty() && !back.verts.empty();
+}
+
 }  // namespace
 
-bool GameAssets::build(const std::string& meshDir) {
+bool GameAssets::build(const std::string& meshDir, const std::string& modelDir) {
     {
         MeshBuilder mb;
         buildArenaFloor(mb);
@@ -344,18 +474,23 @@ bool GameAssets::build(const std::string& meshDir) {
     }
     {
         MeshBuilder mb;
-        buildCarBody(mb);
+        // Thingiverse Fennec model; falls back to the procedural body if the
+        // files are missing (keeps fresh/partial checkouts playable).
+        if (!buildFennecBody(mb, modelDir)) buildCarBody(mb);
         carBody.upload(mb.verts, mb.idx);
     }
     {
-        MeshBuilder mb;
-        buildWheel(mb, 12.5f, 6.0f);
-        wheelFront.upload(mb.verts, mb.idx);
-    }
-    {
-        MeshBuilder mb;
-        buildWheel(mb, 15.0f, 6.5f);
-        wheelBack.upload(mb.verts, mb.idx);
+        MeshBuilder mbF, mbB;
+        if (!buildFennecWheels(mbF, mbB, wheelMounts, modelDir)) {
+            buildWheel(mbF, 12.5f, 6.0f);
+            buildWheel(mbB, 15.0f, 6.5f);
+            wheelMounts[0] = {V3(51.25f, 25.90f, -4.5f), 12.5f, true};
+            wheelMounts[1] = {V3(51.25f, -25.90f, -4.5f), 12.5f, true};
+            wheelMounts[2] = {V3(-33.75f, 29.50f, -2.0f), 15.0f, false};
+            wheelMounts[3] = {V3(-33.75f, -29.50f, -2.0f), 15.0f, false};
+        }
+        wheelFront.upload(mbF.verts, mbF.idx);
+        wheelBack.upload(mbB.verts, mbB.idx);
     }
     {
         MeshBuilder mb;

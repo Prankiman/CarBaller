@@ -24,7 +24,8 @@ game.
   Opacity slider (invisible → solid).
 - **Full rebinding UI** — keyboard, mouse and gamepad, including individual
   left/right stick directions.
-- **Procedural Fennec** — a low-poly Fennec-style body on the real Octane hitbox.
+- **Fennec body** — the printable [Thingiverse Fennec][fennec-thing] on the real
+  Octane hitbox (procedural fallback included).
 - **Lightweight** — flat-shaded OpenGL 3.3, MSAA & particle quality options,
   no game install required.
 
@@ -105,6 +106,9 @@ Psyonix's defaults, and are saved to `settings.json` on exit.
 - [Rocket League](https://rocketleague.psyonix.com) by Psyonix — the game this
   trainer is modeled after; all geometry is procedural or built from publicly
   mirrored collision data, no game assets are redistributed.
+- [Fennec model][fennec-thing] by Thingiverse user **PsychItsMike**
+  (CC BY-NC-SA 4.0), after the original by **Adam Williams** — used for the
+  drivable car body (not affiliated with or endorsed by Psyonix).
 - [Liquipedia](https://liquipedia.net/rocketleague/) — camera & control setting
   ranges and defaults.
 - Collision-mesh mirrors [RocketSimPy](https://github.com/pjsny/RocketSimPy),
@@ -113,3 +117,5 @@ Psyonix's defaults, and are saved to `settings.json` on exit.
   `tools/fetch_assets.sh`.
 - Developed with [OpenCode](https://opencode.ai/), the open-source coding-agent
   CLI, using the **MiMo v2.6 Flash** model.
+
+[fennec-thing]: https://www.thingiverse.com/thing:4195502

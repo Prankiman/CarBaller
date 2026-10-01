@@ -66,6 +66,19 @@ std::string findMeshDir() {
     return candidates[0];
 }
 
+std::string findModelDir() {
+    const char* candidates[] = {
+        "assets/models",
+        "../assets/models",
+        CARBALLER_SOURCE_DIR "/assets/models",
+    };
+    for (const char* c : candidates) {
+        if (std::filesystem::exists(std::filesystem::path(c) / "fennec.stl"))
+            return c;
+    }
+    return candidates[0];
+}
+
 void applyGraphics(App& a) {
     int vsync = a.settings.gfx.vsync ? 1 : 0;
     if (vsync != a.lastVsync) {
@@ -174,7 +187,7 @@ int runApp(int argc, char** argv) {
     a.sim.applyControlSettings(a.settings.ctrl);
 
     // ---- renderer
-    if (!a.renderer.init(meshDir)) {
+    if (!a.renderer.init(meshDir, findModelDir())) {
         std::fprintf(stderr, "[app] renderer init failed\n");
         a.sim.shutdown();
         ImGui_ImplOpenGL3_Shutdown();

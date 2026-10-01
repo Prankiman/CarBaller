@@ -97,11 +97,11 @@ const V3 LIGHT_DIR(0.42f, -0.36f, -0.83f);  // light travels downward
 
 }  // namespace
 
-bool Renderer::init(const std::string& meshDir) {
+bool Renderer::init(const std::string& meshDir, const std::string& modelDir) {
     bool ok = true;
     ok &= lit_.compile(LIT_VS, LIT_FS, "lit");
     ok &= unlit_.compile(UNLIT_VS, UNLIT_FS, "unlit");
-    ok &= assets_.build(meshDir);
+    ok &= assets_.build(meshDir, modelDir);
     if (!ok) std::fprintf(stderr, "[renderer] init failed\n");
     return ok;
 }
@@ -179,20 +179,15 @@ void Renderer::render(const RLCamera& cam, const RenderParams& p, const Particle
 
         // wheels: front pair steers, all spin with ground speed
         float signedSpeed = s.carVel.dot(s.carF);
-        float avgR = 13.5f;
+        float avgR = 0;
+        for (const WheelMount& w : assets_.wheelMounts) avgR += w.r;
+        avgR /= 4.0f;
         if (s.onGround) wheelSpin_ += (signedSpeed * p.dt) / avgR;
         else wheelSpin_ *= std::exp(-1.2f * p.dt);
         float steerAng = p.steerInput * 0.5f;
 
-        struct W { float x, y, z; bool front; float r; };
-        const W wheels[] = {
-            {51.25f, 25.90f, -4.5f, true, 12.5f},
-            {51.25f, -25.90f, -4.5f, true, 12.5f},
-            {-33.75f, 29.50f, -2.0f, false, 15.0f},
-            {-33.75f, -29.50f, -2.0f, false, 15.0f},
-        };
-        for (const W& w : wheels) {
-            M4 local = M4::translate(V3(w.x, w.y, w.z));
+        for (const WheelMount& w : assets_.wheelMounts) {
+            M4 local = M4::translate(w.pos);
             if (w.front) local = local * M4::rotateAxis(V3(0, 0, 1), steerAng);
             local = local * M4::rotateAxis(V3(0, 1, 0), wheelSpin_ / (w.r / avgR));
             M4 model2 = model * local;

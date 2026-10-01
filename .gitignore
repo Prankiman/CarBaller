@@ -10,8 +10,13 @@ compile_commands.json
 /a.out
 /nohup.out
 
-# --- fetched game data (tools/fetch_assets.sh) ---
-/assets/
+# --- fetched game data (tools/fetch_assets.sh); models/ is tracked ---
+/assets/collision_meshes/
+# source archives downloaded at the repo root (extracted copies live in assets/models/)
+/*.zip
+
+# --- local data (player-downloaded content, never committed) ---
+/downloaded_maps/
 
 # --- runtime files (written wherever you launch the game) ---
 settings.json
