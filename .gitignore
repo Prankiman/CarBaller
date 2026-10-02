@@ -27,3 +27,6 @@ imgui.ini
 .idea/
 .cache/
 .DS_Store
+
+# release packaging output (tools/package_linux.sh)
+/dist/
