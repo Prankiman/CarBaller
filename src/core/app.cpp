@@ -286,6 +286,13 @@ int runApp(int argc, char** argv) {
             fpsSmoothed = fpsSmoothed * 0.92f + (1.0f / dt) * 0.08f;
         a.nowSec += dt;
 
+        // Game speed (Settings > Freeplay, 0-150%): one clock for the physics
+        // and everything driven by it. 0 freezes the world mid-frame; the
+        // wall-clock dt above keeps running so fps, audio and camera swivel
+        // behave normally while it's frozen.
+        const float gdt =
+            dt * clampf(a.settings.freeplay.gameSpeed, 0.0f, 150.0f) * (1.0f / 100.0f);
+
         // ---------------- events
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
@@ -316,8 +323,9 @@ int runApp(int argc, char** argv) {
         if (!a.menuOpen) {
             if (a.input.pressed(Action::LaunchBall)) a.sim.launchBall(a.settings.freeplay);
             if (a.input.pressed(Action::Dribble)) a.sim.startDribble();
-            if (a.input.pressed(Action::TakePosition)) {
-                a.sim.takePosition(a.settings.freeplay.takePositionPreset);
+            if (a.input.pressed(Action::TakePossession)) a.sim.takePossession();
+            if (a.input.pressed(Action::ResetShot)) {
+                a.sim.resetShot(a.settings.freeplay.resetShotPreset);
                 a.camResetPending = true;
             }
         }
@@ -377,12 +385,49 @@ int runApp(int argc, char** argv) {
                 // (screenshots validate ball-cam centering + boost particles)
                 static bool stReset = false;
                 if (!stReset) {
-                    a.sim.takePosition(0);
+                    a.sim.resetShot(0);
                     a.camResetPending = true;
                     stReset = true;
                 }
                 c.throttle = 1.0f;
                 c.boost = true;
+            } else if (stT < 20.5f) {
+                // flip reset phase: hang the car level, right over the center
+                // ball, a short drop up with its jump already spent - the
+                // four-wheel landing has to trip the flip reset indicator
+                // (see the "flip reset obtained" / fr= telemetry).
+                static bool frDrop = false;
+                static bool frLift = false;
+                if (!frDrop) {
+                    a.sim.resetShot(4);   // clean slate: ball to center, car fresh
+                    a.camResetPending = true;
+                    RocketSim::CarState cs = a.sim.car()->GetState();
+                    cs.pos = RocketSim::Vec(0, 0, 245.0f);   // ~60 uu above the ball
+                    cs.vel = RocketSim::Vec(0, 0, 0);
+                    cs.angVel = RocketSim::Vec(0, 0, 0);
+                    cs.isOnGround = false;
+                    cs.hasJumped = true;    // jump already used: landing grants it back
+                    cs.hasDoubleJumped = false;
+                    cs.hasFlipped = false;
+                    cs.isFlipping = false;
+                    cs.isJumping = false;
+                    cs.airTime = 0;
+                    cs.airTimeSinceJump = 0;
+                    a.sim.car()->SetState(cs);
+                    frDrop = true;
+                }
+                // Once the reset is banked, lift the car into open air: the
+                // disc has to stay lit while airborne (it only clears on a
+                // floor landing or when the flip is used).
+                if (!frLift && stT >= 17.4f) {
+                    RocketSim::CarState cs = a.sim.car()->GetState();
+                    cs.pos = RocketSim::Vec(0, 500, 1650);   // under the ceiling
+                    cs.vel = RocketSim::Vec(0, 0, 0);
+                    cs.angVel = RocketSim::Vec(0, 0, 0);
+                    a.sim.car()->SetState(cs);
+                    a.camResetPending = true;
+                    frLift = true;
+                }
             } else {
                 std::fprintf(stderr, "[st] selftest complete\n");
                 running = false;
@@ -391,7 +436,7 @@ int runApp(int argc, char** argv) {
         }
 
         a.sim.paused = a.menuOpen;
-        a.sim.advance(dt);
+        a.sim.advance(gdt);
 
         SimSnapshot snap = a.sim.snapshot(a.sim.paused ? 1.0f
                                                        : clampf(float(a.sim.accumAlpha()), 0, 1));
@@ -429,12 +474,12 @@ int runApp(int argc, char** argv) {
         a.cam.update(dt, a.settings.cam, snap, swX, swY);
 
         // particles
-        a.particles.update(dt);
+        a.particles.update(gdt);
         if (!a.menuOpen && snap.boosting) {
             float rate = a.settings.gfx.particleQuality == 0 ? 220.0f
                         : a.settings.gfx.particleQuality == 1 ? 380.0f
                                                               : 560.0f;
-            a.boostAccum += rate * dt;
+            a.boostAccum += rate * gdt;
             V3 exhaust = snap.carPos + snap.carF * -44.0f + snap.carU * 16.0f;
             V3 dirBack = snap.carF * -1.0f;
             while (a.boostAccum >= 1.0f) {
@@ -450,18 +495,26 @@ int runApp(int argc, char** argv) {
         RenderParams rp;
         rp.width = dw;
         rp.height = dh;
-        rp.dt = dt;
+        rp.dt = gdt;
         rp.snap = &snap;
         rp.steerInput = steerVisual;
         rp.fovX = a.settings.cam.fov * (float)M_PI / 180.0f;
         rp.showBallRing = a.settings.cam.ballFloorProjection;
         rp.showShadows = true;
         rp.showHitboxes = a.settings.gfx.showHitboxes;
+        rp.showFlipReset = a.settings.cam.flipResetIndicator;
         rp.wallOpacity = a.settings.gfx.wallOpacity;
         a.renderer.render(a.cam, rp, a.particles);
 
         // ---------------- self-test telemetry
         if (selfTest) {
+            // One-shot marker: proves the flip reset phase actually tripped
+            // the indicator (scanned in CI logs).
+            static bool frLogged = false;
+            if (!frLogged && snap.flipReset) {
+                frLogged = true;
+                std::fprintf(stderr, "[st] flip reset obtained (indicator on) t=%.2f\n", stT);
+            }
             static float nextLog = 0.1f;
             if (stT >= nextLog) {
                 const auto& c = a.sim.car()->controls;
@@ -476,7 +529,7 @@ int runApp(int argc, char** argv) {
                 std::fprintf(stderr,
                              "[st] t=%5.2f yaw=%6.2f Fz=%+.2f Uz=%+.2f Rz=%+.3f "
                              "pR=%+6.2f fR=%+5.2f yR=%+6.2f d=%4.0f ndx=%s%+5.0f "
-                             "ball=%s%3.0f,%3.0f fps=%3.0f "
+                             "ball=%s%3.0f,%3.0f fps=%3.0f fr=%d carXY=%s%3.0f,%3.0f "
                              "ctl(t%+.0f s%+.0f p%+.0f j%.0f)\n",
                              stT, yaw, snap.carF.z, snap.carU.z, snap.carR.z,
                              snap.carAngVel.dot(snap.carR),
@@ -484,7 +537,8 @@ int runApp(int argc, char** argv) {
                              snap.carAngVel.dot(snap.carU),
                              dist, ok ? "" : "na ", ok ? nx - cx : 0.0f,
                              okB ? "" : "na ", okB ? bx : 0.0f, okB ? by : 0.0f,
-                             fpsSmoothed,
+                             fpsSmoothed, snap.flipReset ? 1 : 0,
+                             ok ? "" : "na ", ok ? cx : 0.0f, ok ? cy : 0.0f,
                              c.throttle, c.steer, c.pitch, c.jump ? 1.0f : 0.0f);
                 nextLog += 0.1f;
             }

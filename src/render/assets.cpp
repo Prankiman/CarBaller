@@ -532,6 +532,28 @@ bool GameAssets::build(const std::string& meshDir, const std::string& modelDir) 
         }
         shadowDisc.upload(mb.verts, mb.idx);
     }
+    {
+        // Flip reset indicator: a hollow disc floating just beneath the car
+        // while a reset is held. Two flat annuli (top + bottom) plus outer and
+        // inner rim walls give it real thickness, so it is a slab rather than
+        // a decal. Every face brightens towards its edges and the whole thing
+        // is drawn additively, so it reads as a ring of light with a hole in
+        // the middle (the car straddles the hole).
+        MeshBuilder mb;
+        constexpr float kHalfT = 6.0f;    // half thickness -> a 12uu slab
+        constexpr float kOut = 72.0f;     // outer radius (just past the nose)
+        constexpr float kIn = 38.0f;      // hole radius
+        constexpr int kSegs = 96;
+        const Col faceIn(1, 1, 1, 0.16f), faceOut(1, 1, 1, 0.34f);
+        const Col rimOut(1, 1, 1, 0.70f), rimIn(1, 1, 1, 0.55f);
+        mb.ringZ(V3(0, 0, kHalfT), kIn, kOut, kSegs, faceIn, faceOut);    // top
+        mb.ringZ(V3(0, 0, -kHalfT), kIn, kOut, kSegs, faceIn, faceOut);   // bottom
+        mb.cylinder(V3(0, 0, -kHalfT), V3(0, 0, kHalfT), kOut, kOut, kSegs,
+                    rimOut, false, false);                                 // outer rim
+        mb.cylinder(V3(0, 0, -kHalfT), V3(0, 0, kHalfT), kIn, kIn, kSegs,
+                    rimIn, false, false);                                  // inner rim
+        flipDisc.upload(mb.verts, mb.idx);
+    }
     return arenaFloor.valid() && arenaShell.valid() && carBody.valid() && ball.valid();
 }
 
@@ -545,5 +567,6 @@ void GameAssets::destroy() {
     ball.destroy();
     indicator.destroy();
     shadowDisc.destroy();
+    flipDisc.destroy();
     ballTex.destroy();
 }

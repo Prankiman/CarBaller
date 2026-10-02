@@ -297,6 +297,22 @@ void Renderer::render(const RLCamera& cam, const RenderParams& p, const Particle
         drawUnlit(assets_.indicator, m, 0.85f, false);
     }
 
+    // ---------- flip reset indicator (Settings > Camera): a glowing hollow
+    // disc floating just beneath the car while a reset is held. World-aligned
+    // (horizontal) instead of camera-facing, with the slab's thickness showing,
+    // additively blended so it glows; it pops in on the tick the reset lands
+    // and settles into a steady glow until the flip is used or we land.
+    if (p.showFlipReset && s.flipReset) {
+        const float t = clampf(s.flipResetAge / 0.35f, 0.0f, 1.0f);
+        const float scale = lerpf(1.5f, 1.0f, t);
+        const float alpha = lerpf(1.9f, 1.0f, t);
+        // Hang it just under the car's floor (the hitbox bottom sits about
+        // 1uu above the car origin), leaving a visible gap.
+        M4 model = M4::translate(V3(s.carPos.x, s.carPos.y, s.carPos.z - 20.0f)) *
+                   M4::scale(V3(scale, scale, 1));
+        drawUnlit(assets_.flipDisc, model, alpha, /*additive=*/true);
+    }
+
     // ---------- physics hitbox outlines (Settings > Graphics).
     // Drawn in the transparent pass, depth-tested but offset slightly
     // toward the camera so box edges grazing the car body don't z-fight.

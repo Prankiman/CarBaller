@@ -15,6 +15,7 @@ struct RenderParams {
     bool showBallRing = true;
     bool showShadows = true;
     bool showHitboxes = false;     // outline car/ball physics hitboxes
+    bool showFlipReset = true;     // RL's flip reset disc under the car
     float wallOpacity = 1.0f;   // 0..1 shell opacity when camera is outside
 };
 

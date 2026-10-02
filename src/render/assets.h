@@ -26,6 +26,7 @@ struct GameAssets {
     GpuMesh ball;         // UV sphere (lit, textured)
     GpuMesh indicator;    // ball floor-projection ring (unlit)
     GpuMesh shadowDisc;   // soft blob disc radius 1 (unlit)
+    GpuMesh flipDisc;     // flip reset indicator: hollow disc beneath the car
 
     Texture2D ballTex;
 

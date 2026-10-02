@@ -111,6 +111,11 @@ void drawCameraTab(CameraSettings& c, bool& changed) {
           "Draw an arrow pointing at the ball while in car cam (Rocket League's 'Ball Arrow').");
     check("Ball Floor Projection", &c.ballFloorProjection, changed,
           "Project the ball's position onto the ground as a shadow/marker.");
+    check("Flip Reset Indicator", &c.flipResetIndicator, changed,
+          "Rocket League's flip reset indicator: a glowing white hollow disc "
+          "under your car while you are holding a reset (all four wheels "
+          "touched the ball, wall or ceiling in mid-air). It flashes when the "
+          "reset lands and stays until you use the flip or touch the ground.");
     check("Mouse Swivel", &c.mouseSwivel, changed,
           "Let the mouse swivel the camera while the settings menu is closed.");
 
@@ -159,16 +164,22 @@ void drawFreeplayTab(FreeplaySettings& f, bool& changed) {
         "Blue Goal Line",
     };
 
+    sliderF("Game Speed", &f.gameSpeed, 0.0f, 150.0f, "%.0f%%", changed,
+            "How fast the simulation runs: 0% freezes the car and ball for a "
+            "setup, 50% is half speed for learning mechanics, 100% is normal, "
+            "150% is the ceiling. The camera keeps swiveling either way.");
+
     sliderF("Launch Ball Speed", &f.launchSpeed, 1000.0f, 5000.0f, "%.0f uu/s", changed,
             "Speed of the ball when 'Launch Ball' is pressed.");
     sliderF("Launch Angle", &f.launchAngle, -90.0f, 90.0f, "%.0f deg", changed,
             "Angle of the launched ball: 0 = straight downfield, 90 = straight "
             "up, negative = angled back down.");
 
-    int preset = f.takePositionPreset;
-    comboIndex("Take Position", &preset, 6, kPresets, changed,
-               "Where 'Take Position' teleports the car in freeplay.");
-    f.takePositionPreset = preset;
+    int preset = f.resetShotPreset;
+    comboIndex("Reset Shot", &preset, 6, kPresets, changed,
+               "Where 'Reset Shot' teleports the car; the ball is always reset "
+               "to the middle of the field.");
+    f.resetShotPreset = preset;
 }
 
 void drawGraphicsTab(GraphicsSettings& g, bool& changed) {

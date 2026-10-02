@@ -15,7 +15,7 @@ enum class Action {
     AirRollLeft, AirRollRight, AirRollFree,
     Powerslide, Boost, Jump, BallCam,
     SwivelLeft, SwivelRight, SwivelUp, SwivelDown,
-    LaunchBall, Dribble, TakePosition,
+    LaunchBall, Dribble, TakePossession, ResetShot,
     Pause, ToggleStats,
     COUNT_
 };
@@ -68,6 +68,7 @@ struct CameraSettings {
     bool ballCamIndicator = true;
     bool ballArrow = true;         // car->ball arrow while in car cam
     bool ballFloorProjection = true;
+    bool flipResetIndicator = true; // RL's flip reset disc under the car
     bool mouseSwivel = true;
     float mouseSens = 10.0f;       // 1..100 (RL); 10 = our 0.016 rad/px scale
 };
@@ -85,7 +86,8 @@ struct ControlSettings {
 struct FreeplaySettings {
     float launchSpeed = 2500.0f;   // uu/s
     float launchAngle = 10.0f;     // degrees upward
-    int takePositionPreset = 0;    // index into presets
+    int resetShotPreset = 0;       // index into presets
+    float gameSpeed = 100.0f;      // 0..150 (%): global simulation speed
 };
 
 struct GraphicsSettings {

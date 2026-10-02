@@ -30,7 +30,8 @@ const char* actionName(Action a) {
         case Action::SwivelDown: return "Camera Swivel Down";
         case Action::LaunchBall: return "Launch Ball";
         case Action::Dribble: return "Start Dribble";
-        case Action::TakePosition: return "Take Position";
+        case Action::TakePossession: return "Take Possession";
+        case Action::ResetShot: return "Reset Shot";
         case Action::Pause: return "Pause / Menu";
         case Action::ToggleStats: return "Toggle Stats";
         default: return "?";
@@ -48,7 +49,7 @@ Bindings Bindings::defaults() {
     // SDL scancodes (SDL_SCANCODE_*)
     constexpr int SC_W = 26, SC_A = 4, SC_S = 22, SC_D = 7;
     constexpr int SC_Q = 20, SC_E = 8, SC_SHIFT = 225, SC_SPACE = 44;
-    constexpr int SC_B = 5, SC_V = 25, SC_T = 23, SC_ESC = 41, SC_F3 = 60; // F3
+    constexpr int SC_B = 5, SC_V = 25, SC_T = 23, SC_R = 21, SC_ESC = 41, SC_F3 = 60; // F3
     constexpr int SC_LEFT = 80, SC_RIGHT = 79, SC_UP = 82, SC_DOWN = 81;
 
     b.set(Action::Throttle, {K(SC_W), Binding{BindType::PadAxis, 5 /*RT*/, 1}});
@@ -72,7 +73,8 @@ Bindings Bindings::defaults() {
     b.set(Action::SwivelDown, {K(SC_DOWN)});
     b.set(Action::LaunchBall, {K(SC_B), P(4 /*Back*/)});
     b.set(Action::Dribble, {K(SC_V), P(7 /*LS click*/)});
-    b.set(Action::TakePosition, {K(SC_T), P(8 /*RS click*/)});
+    b.set(Action::TakePossession, {K(SC_T), P(8 /*RS click*/)});
+    b.set(Action::ResetShot, {K(SC_R), P(12 /*D-Pad Down*/)});
     b.set(Action::Pause, {K(SC_ESC), P(6 /*Start*/)});
     b.set(Action::ToggleStats, {K(SC_F3)});
     return b;
@@ -113,6 +115,7 @@ bool Settings::save(const std::string& path) const {
         {"snap", cam.snap},
         {"ballCamToggle", cam.ballCamToggle}, {"ballCamIndicator", cam.ballCamIndicator},
         {"ballArrow", cam.ballArrow}, {"ballFloorProjection", cam.ballFloorProjection},
+        {"flipResetIndicator", cam.flipResetIndicator},
         {"mouseSwivel", cam.mouseSwivel}, {"mouseSens", cam.mouseSens},
     };
     j["controls"] = {
@@ -123,7 +126,8 @@ bool Settings::save(const std::string& path) const {
     };
     j["freeplay"] = {
         {"launchSpeed", freeplay.launchSpeed}, {"launchAngle", freeplay.launchAngle},
-        {"takePositionPreset", freeplay.takePositionPreset},
+        {"resetShotPreset", freeplay.resetShotPreset},
+        {"gameSpeed", freeplay.gameSpeed},
     };
     j["graphics"] = {
         {"vsync", gfx.vsync}, {"fpsCap", gfx.fpsCap},
@@ -174,6 +178,7 @@ bool Settings::load(const std::string& path) {
         cam.ballCamIndicator = c.value("ballCamIndicator", cam.ballCamIndicator);
         cam.ballArrow = c.value("ballArrow", cam.ballArrow);
         cam.ballFloorProjection = c.value("ballFloorProjection", cam.ballFloorProjection);
+        cam.flipResetIndicator = c.value("flipResetIndicator", cam.flipResetIndicator);
         cam.mouseSwivel = c.value("mouseSwivel", cam.mouseSwivel);
         cam.mouseSens = c.value("mouseSens", cam.mouseSens);
     }
@@ -191,7 +196,10 @@ bool Settings::load(const std::string& path) {
         auto& c = j["freeplay"];
         freeplay.launchSpeed = c.value("launchSpeed", freeplay.launchSpeed);
         freeplay.launchAngle = c.value("launchAngle", freeplay.launchAngle);
-        freeplay.takePositionPreset = c.value("takePositionPreset", freeplay.takePositionPreset);
+        // "takePositionPreset" is the pre-rename key for resetShotPreset.
+        freeplay.resetShotPreset =
+            c.value("resetShotPreset", c.value("takePositionPreset", freeplay.resetShotPreset));
+        freeplay.gameSpeed = c.value("gameSpeed", freeplay.gameSpeed);
     }
     if (j.contains("graphics")) {
         auto& c = j["graphics"];
@@ -214,7 +222,11 @@ bool Settings::load(const std::string& path) {
             // match by display name
             for (int i = 0; i < (int)Action::COUNT_; i++) {
                 Action a = (Action)i;
-                if (name == actionName(a)) {
+                // "Take Position" was renamed to "Take Possession": accept the
+                // old key so existing settings.json files keep their binding.
+                bool match = name == actionName(a) ||
+                             (a == Action::TakePossession && name == "Take Position");
+                if (match) {
                     BindList list;
                     for (auto& bj : arr) list.push_back(bindingFromJson(bj));
                     if (!list.empty()) binds.binds[a] = list;
@@ -245,6 +257,7 @@ bool Settings::load(const std::string& path) {
     if (ctrl.deadzoneShape != 0 && ctrl.deadzoneShape != 1) ctrl.deadzoneShape = 0;
     freeplay.launchSpeed = clampf(freeplay.launchSpeed, 1000.0f, 5000.0f);
     freeplay.launchAngle = clampf(freeplay.launchAngle, -90.0f, 90.0f);
+    freeplay.gameSpeed = clampf(freeplay.gameSpeed, 0.0f, 150.0f);
     gfx.wallOpacity = clampf(gfx.wallOpacity, 0.0f, 1.0f);
 
     return true;

@@ -24,6 +24,8 @@ struct SimSnapshot {
     bool supersonic = false;
     bool jumping = false;
     bool flipping = false;
+    bool flipReset = false;       // holding a flip reset (see Sim::stepOnce)
+    float flipResetAge = 0;       // seconds since the reset was obtained
     bool ballHitValid = false;
     V3 ballHitPos;
     float ballHitStrength = 0;    // |extraHitVel| (uu/s)
@@ -59,7 +61,11 @@ public:
     // Freeplay actions
     void launchBall(const FreeplaySettings& fs);
     void startDribble();
-    void takePosition(int presetIndex);
+    // Put the ball on the floor (or in the air, if we're airborne) directly
+    // ahead of the car - freeplay "give me the ball".
+    void takePossession();
+    // Car to a kickoff/drop preset, ball back to the middle at rest.
+    void resetShot(int presetIndex);
 
     void applyControlSettings(const ControlSettings& cs);
 
@@ -101,4 +107,8 @@ private:
     uint64_t lastHitTick_ = ~0ULL;
     uint64_t lastSurfaceTick_ = 0;   // thud cooldown (~67 ms)
     float ballR_ = 91.25f;           // soccar ball radius, set in init()
+
+    // Flip reset indicator state (drawn by the renderer, see stepOnce).
+    bool flipResetHeld_ = false;
+    float flipResetAge_ = 0;         // seconds, capped
 };

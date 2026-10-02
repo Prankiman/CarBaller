@@ -21,6 +21,11 @@ static constexpr float kGoalHeight = 642.77f;              // mouth height
 static constexpr float kShellMargin = 40.0f;               // uu slack for 120 Hz steps
 static constexpr float kThudMinImpact = 250.0f;            // uu/s; below = bounce chatter
 static constexpr uint64_t kThudCooldownTicks = 8;          // ~67 ms
+// Wheel contacts at or below this height are the floor (a resting car sits at
+// ~17 uu); anything higher is a ball/wall/ceiling touch, i.e. a flip reset.
+static constexpr float kFloorClearanceZ = 60.0f;
+// Age stops accumulating here: the indicator only needs the first flash.
+static constexpr float kFlipResetAgeMax = 10.0f;
 
 bool Sim::init(const std::string& meshDir) {
     if (!std::filesystem::exists(std::filesystem::path(meshDir) / "soccar")) {
@@ -55,7 +60,7 @@ bool Sim::init(const std::string& meshDir) {
     }
     car_->config.dodgeDeadzone = 0.7f;
 
-    takePosition(0);
+    resetShot(0);
 
     prevCar_ = curCar_ = car_->GetState();
     prevBall_ = curBall_ = arena_->ball->GetState();
@@ -93,6 +98,28 @@ void Sim::stepOnce() {
         if (jumpEdge) onCarJump();
     }
     if (onCarFlip && curCar_.hasFlipped && !prevCar_.hasFlipped) onCarFlip();
+
+    // Flip reset (Rocket League's "Flip Reset Indicator" state).
+    // RocketSim clears hasJumped/hasDoubleJumped/hasFlipped the tick >=3 wheels
+    // find contact, so a car that planted its wheels mid-air genuinely gets its
+    // flip back - we only have to notice it. Require that the car had actually
+    // jumped (a car that just drove off a ledge never lost its flip), and that
+    // the contact is well above the floor, so a normal landing never counts.
+    const bool flipResetObtained =
+        curCar_.isOnGround && !prevCar_.isOnGround && prevCar_.hasJumped &&
+        curCar_.pos.z > kFloorClearanceZ;
+    if (flipResetObtained) {
+        flipResetHeld_ = true;
+        flipResetAge_ = 0;
+    } else if (flipResetHeld_) {
+        const bool backOnFloor = curCar_.isOnGround && curCar_.pos.z <= kFloorClearanceZ;
+        const bool flipUsed = curCar_.hasFlipped || curCar_.hasDoubleJumped;
+        if (backOnFloor || flipUsed) {
+            flipResetHeld_ = false;
+        } else {
+            flipResetAge_ = std::min(flipResetAge_ + tickDt, kFlipResetAgeMax);
+        }
+    }
 
     const BallHitInfo& hi = curCar_.ballHitInfo;
     const bool freshCarHit = hi.isValid && hi.tickCountWhenHit != lastHitTick_;
@@ -184,6 +211,8 @@ SimSnapshot Sim::snapshot(float alpha) const {
     s.supersonic = curCar_.isSupersonic;
     s.jumping = curCar_.isJumping;
     s.flipping = curCar_.isFlipping;
+    s.flipReset = flipResetHeld_;
+    s.flipResetAge = flipResetAge_;
 
     const BallHitInfo& hi = curCar_.ballHitInfo;
     s.ballHitValid = hi.isValid && hi.tickCountWhenHit == lastHitTick_;
@@ -220,7 +249,9 @@ float Sim::spawnYawForPreset(int presetIndex) const {
     }
 }
 
-void Sim::takePosition(int presetIndex) {
+// Reset Shot: car to a kickoff/drop preset, ball back to the middle at rest -
+// every press is the same clean shot (or kickoff) to play.
+void Sim::resetShot(int presetIndex) {
     if (!car_) return;
     CarState s = car_->GetState();
     s.pos = toVec(spawnPosForPreset(presetIndex));
@@ -253,6 +284,19 @@ void Sim::takePosition(int presetIndex) {
 
     car_->SetState(s);
     car_->controls = CarControls();
+
+    if (arena_ && arena_->ball) {
+        BallState bs;
+        bs.pos = Vec(0, 0, RLConst::BALL_REST_Z);
+        bs.rotMat = RotMat::GetIdentity();
+        bs.vel = Vec(0, 0, 0);
+        bs.angVel = Vec(0, 0, 0);
+        arena_->ball->SetState(bs);
+    }
+
+    flipResetHeld_ = false;
+    flipResetAge_ = 0;
+    lastSurfaceTick_ = ticksSimulated;   // the fresh ball drop is not an impact
 
     prevCar_ = curCar_ = car_->GetState();
     if (arena_ && arena_->ball) prevBall_ = curBall_ = arena_->ball->GetState();
@@ -297,6 +341,42 @@ void Sim::startDribble() {
     bs.vel = cs.vel;
     bs.angVel = Vec(0, 0, 0);
 
+    arena_->ball->SetState(bs);
+    prevBall_ = curBall_ = arena_->ball->GetState();
+}
+
+// Take Possession: drop the ball directly in front of the car - on the floor
+// when we're grounded, or at our own height when we're mid-air (an aerial to
+// chase). The car keeps whatever it was doing.
+void Sim::takePossession() {
+    if (!arena_ || !arena_->ball || !car_) return;
+    CarState cs = car_->GetState();
+
+    // "In front" flattened to the horizontal plane. With the nose pointed
+    // near-vertical (wall/ceiling play) aim across the pitch instead: from
+    // the car towards wherever the ball currently is, +X as a last resort.
+    V3 f = toV3(cs.rotMat.forward);
+    V3 dir(f.x, f.y, 0);
+    if (dir.len() < 0.15f) {
+        V3 d = toV3(arena_->ball->GetState().pos) - toV3(cs.pos);
+        dir = V3(d.x, d.y, 0);
+        if (dir.len() < 0.15f) dir = V3(1, 0, 0);
+    }
+    dir = dir.norm();
+
+    const float ballR = arena_->ball->GetRadius();
+    // Past the nose (Octane half length ~59 uu) + the ball's own radius, plus
+    // a cushion, so it lands clear of the car and stays an easy first touch.
+    constexpr float kCushion = 170.0f;
+    const float ahead = 59.0f + ballR + kCushion;
+    V3 p = toV3(cs.pos) + dir * ahead;
+    const float z = std::max(cs.pos.z, RLConst::BALL_REST_Z);
+
+    BallState bs;
+    bs.pos = Vec(p.x, p.y, z);
+    bs.rotMat = RotMat::GetIdentity();
+    bs.vel = Vec(0, 0, 0);
+    bs.angVel = Vec(0, 0, 0);
     arena_->ball->SetState(bs);
     prevBall_ = curBall_ = arena_->ball->GetState();
 }

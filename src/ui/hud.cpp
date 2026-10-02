@@ -89,11 +89,17 @@ void HUD::draw(const SimSnapshot& snap, const RLCamera& cam, const Renderer& ren
         char buf[256];
         float speed = snap.carVel.len();
         float ballSpeed = snap.ballVel.len();
+        // Game speed (Settings > Freeplay) only when it isn't the default,
+        // so the overlay stays as short as possible during normal play.
+        char gameSpeedLine[32] = "";
+        if (std::fabs(settings.freeplay.gameSpeed - 100.0f) > 0.5f)
+            std::snprintf(gameSpeedLine, sizeof(gameSpeedLine), "\nSPEED %.0f%%",
+                          settings.freeplay.gameSpeed);
         std::snprintf(buf, sizeof(buf),
-                      "FPS %.0f\nCAR %.0f uu/s (%.0f km/h)\nBALL %.0f uu/s\n%s%s",
+                      "FPS %.0f\nCAR %.0f uu/s (%.0f km/h)\nBALL %.0f uu/s\n%s%s%s",
                       fps, speed, speed * 0.036f, ballSpeed,
                       snap.onGround ? "GROUND" : (snap.flipping ? "FLIP" : "AIR"),
-                      snap.supersonic ? "  SUPERSONIC" : "");
+                      snap.supersonic ? "  SUPERSONIC" : "", gameSpeedLine);
         dl->AddText(ImVec2(16, 12), IM_COL32(210, 230, 255, 220), buf);
     }
 
