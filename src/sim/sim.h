@@ -24,7 +24,8 @@ struct SimSnapshot {
     bool supersonic = false;
     bool jumping = false;
     bool flipping = false;
-    bool flipReset = false;       // holding a flip reset (see Sim::stepOnce)
+    bool flipReset = false;       // holding a flip reset taken off the BALL
+                                  // (wall/ceiling resets never set it, see stepOnce)
     float flipResetAge = 0;       // seconds since the reset was obtained
     bool ballHitValid = false;
     V3 ballHitPos;

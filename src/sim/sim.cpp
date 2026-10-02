@@ -26,6 +26,44 @@ static constexpr uint64_t kThudCooldownTicks = 8;          // ~67 ms
 static constexpr float kFloorClearanceZ = 60.0f;
 // Age stops accumulating here: the indicator only needs the first flash.
 static constexpr float kFlipResetAgeMax = 10.0f;
+// Octane wheel bottoms (mount -4.5, r 12.5 front / -2.0, r 15 rear) sit this
+// far below the car origin - i.e. further down than the physics box's bottom
+// face, which is ~1.4 uu *above* the origin.
+static constexpr float kWheelReachBelowOrigin = 17.0f;
+// Slack on the ball test below: suspension travel + the ball's curvature at
+// the point where the wheels bite.
+static constexpr float kBallContactSlack = 12.0f;
+
+// RocketSim tells us *that* the wheels found contact (isOnGround) but never
+// what they touched, so ask geometry: for a reset off the ball, the ball has
+// to be sitting against the wheels' side of the physics box, within wheel
+// reach. That is what keeps a wall or ceiling plant from lighting the
+// indicator - the disc is only for ball resets.
+static bool ballAtWheels(const CarState& c, const BallState& b, const CarConfig& cfg,
+                         float ballR) {
+    // Physics box in car-local space: +X forward, +Y right, +Z roof (-Z wheels).
+    const V3 off(cfg.hitboxPosOffset.x, cfg.hitboxPosOffset.y, cfg.hitboxPosOffset.z);
+    const V3 half(cfg.hitboxSize.x * 0.5f, cfg.hitboxSize.y * 0.5f, cfg.hitboxSize.z * 0.5f);
+
+    // Ball centre in that frame, measured from the box centre.
+    const V3 d = toV3(b.pos) - toV3(c.pos);
+    const V3 f = toV3(c.rotMat.forward), r = toV3(c.rotMat.right), u = toV3(c.rotMat.up);
+    const V3 q = V3(d.dot(f), d.dot(r), d.dot(u)) - off;
+
+    // Vector from the closest point on the box to the ball centre.
+    const V3 v = V3(q.x - clampf(q.x, -half.x, half.x),
+                    q.y - clampf(q.y, -half.y, half.y),
+                    q.z - clampf(q.z, -half.z, half.z));
+    const float dist = v.len();
+
+    // A wheel planted on the ball leaves the ball's centre ~110 uu from the
+    // box (wheel reach + the ball radius); anything further was no reset.
+    const float reach = kWheelReachBelowOrigin + (off.z - half.z);
+    if (dist > ballR + reach + kBallContactSlack) return false;
+    // ...and the ball has to be on the side the wheels point at, so a wall or
+    // ceiling plant with the ball alongside - or on the roof - never counts.
+    return v.z <= -0.3f * dist;
+}
 
 bool Sim::init(const std::string& meshDir) {
     if (!std::filesystem::exists(std::filesystem::path(meshDir) / "soccar")) {
@@ -103,11 +141,14 @@ void Sim::stepOnce() {
     // RocketSim clears hasJumped/hasDoubleJumped/hasFlipped the tick >=3 wheels
     // find contact, so a car that planted its wheels mid-air genuinely gets its
     // flip back - we only have to notice it. Require that the car had actually
-    // jumped (a car that just drove off a ledge never lost its flip), and that
-    // the contact is well above the floor, so a normal landing never counts.
+    // jumped (a car that just drove off a ledge never lost its flip), that the
+    // contact is well above the floor, and - per the indicator's contract -
+    // that the wheels found the BALL: wall and ceiling resets grant the flip
+    // all the same, but they never light the disc.
     const bool flipResetObtained =
         curCar_.isOnGround && !prevCar_.isOnGround && prevCar_.hasJumped &&
-        curCar_.pos.z > kFloorClearanceZ;
+        curCar_.pos.z > kFloorClearanceZ &&
+        ballAtWheels(curCar_, curBall_, car_->config, ballR_);
     if (flipResetObtained) {
         flipResetHeld_ = true;
         flipResetAge_ = 0;
@@ -305,10 +346,10 @@ void Sim::resetShot(int presetIndex) {
 
 void Sim::launchBall(const FreeplaySettings& fs) {
     if (!arena_ || !arena_->ball) return;
-    BallState bs;
-    bs.pos = Vec(0, 0, RLConst::BALL_REST_Z);
-    bs.rotMat = RotMat::GetIdentity();
-    bs.vel = Vec(0, 0, 0);
+    // Launch in place: the ball keeps exactly where it already is - on the
+    // floor, on your roof, mid-chase - and is only given the launch velocity,
+    // so it never teleports back to the middle.
+    BallState bs = arena_->ball->GetState();
     bs.angVel = Vec(0, 0, 0);
 
     // fire downfield relative to the car's half

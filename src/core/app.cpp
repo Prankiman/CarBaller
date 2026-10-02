@@ -308,8 +308,13 @@ int runApp(int argc, char** argv) {
         a.input.update();
 
         // ---------------- action edges
+        // The selftest runs a scripted timeline: stray input must not derail
+        // it. SDL gamepad events go to every app reading the device, so a
+        // session running alongside this one (Pause mid-run, a Reset Shot
+        // during the drop) would otherwise desync the phases - and without
+        // this gate the test is only reproducible when nobody touches a pad.
         bool escSwallowed = a.input.consumeSwallowedEsc();
-        if (a.input.pressed(Action::Pause) && !escSwallowed) {
+        if (a.input.pressed(Action::Pause) && !escSwallowed && !selfTest) {
             a.menuOpen = !a.menuOpen;
             if (a.menuOpen) {
                 a.input.cancelCapture();
@@ -318,9 +323,10 @@ int runApp(int argc, char** argv) {
             if (!a.menuOpen) a.needSave = true;  // save when leaving the menu too
             a.audio.playMenu(0.7f);              // menu open/close blip
         }
-        if (a.input.pressed(Action::ToggleStats)) a.statsVisible = !a.statsVisible;
+        if (a.input.pressed(Action::ToggleStats) && !selfTest)
+            a.statsVisible = !a.statsVisible;
 
-        if (!a.menuOpen) {
+        if (!a.menuOpen && !selfTest) {
             if (a.input.pressed(Action::LaunchBall)) a.sim.launchBall(a.settings.freeplay);
             if (a.input.pressed(Action::Dribble)) a.sim.startDribble();
             if (a.input.pressed(Action::TakePossession)) a.sim.takePossession();
@@ -416,14 +422,16 @@ int runApp(int argc, char** argv) {
                     a.sim.car()->SetState(cs);
                     frDrop = true;
                 }
-                // Once the reset is banked, lift the car into open air: the
-                // disc has to stay lit while airborne (it only clears on a
-                // floor landing or when the flip is used).
+                // Once the reset is banked, lift the car into open air and give
+                // it a roll: the disc has to stay lit while airborne (it only
+                // clears on a floor landing or when the flip is used) and it
+                // has to tumble *with* the car, since it rides the car's own
+                // underside rather than hanging level with the world.
                 if (!frLift && stT >= 17.4f) {
                     RocketSim::CarState cs = a.sim.car()->GetState();
-                    cs.pos = RocketSim::Vec(0, 500, 1650);   // under the ceiling
+                    cs.pos = RocketSim::Vec(0, 500, 800);   // in frame + ~1.6s of fall
                     cs.vel = RocketSim::Vec(0, 0, 0);
-                    cs.angVel = RocketSim::Vec(0, 0, 0);
+                    cs.angVel = RocketSim::Vec(0, 1.2f, 0); // roll about world Y
                     a.sim.car()->SetState(cs);
                     a.camResetPending = true;
                     frLift = true;

@@ -113,9 +113,10 @@ void drawCameraTab(CameraSettings& c, bool& changed) {
           "Project the ball's position onto the ground as a shadow/marker.");
     check("Flip Reset Indicator", &c.flipResetIndicator, changed,
           "Rocket League's flip reset indicator: a glowing white hollow disc "
-          "under your car while you are holding a reset (all four wheels "
-          "touched the ball, wall or ceiling in mid-air). It flashes when the "
-          "reset lands and stays until you use the flip or touch the ground.");
+          "that hangs under your car's underside while you are holding a reset "
+          "taken off the BALL (all four wheels planted on it in mid-air). It "
+          "flashes when the reset lands and stays until you use the flip or "
+          "touch the ground. Resets taken off the wall or ceiling never show it.");
     check("Mouse Swivel", &c.mouseSwivel, changed,
           "Let the mouse swivel the camera while the settings menu is closed.");
 
@@ -170,7 +171,9 @@ void drawFreeplayTab(FreeplaySettings& f, bool& changed) {
             "150% is the ceiling. The camera keeps swiveling either way.");
 
     sliderF("Launch Ball Speed", &f.launchSpeed, 1000.0f, 5000.0f, "%.0f uu/s", changed,
-            "Speed of the ball when 'Launch Ball' is pressed.");
+            "Speed of the ball when 'Launch Ball' is pressed. The ball is fired "
+            "from wherever it already is - it is never teleported back to the "
+            "middle of the field.");
     sliderF("Launch Angle", &f.launchAngle, -90.0f, 90.0f, "%.0f deg", changed,
             "Angle of the launched ball: 0 = straight downfield, 90 = straight "
             "up, negative = angled back down.");

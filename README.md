@@ -20,12 +20,15 @@ game.
 - **Rocket League camera** — ball cam / car cam, RL-accurate settings ranges
   (Liquipedia) with Psyonix v1.74 defaults, instant snap-back, mouse or key swivel.
 - **Freeplay toolkit** — infinite boost, launch the ball at any angle
-  (−90°…+90°, straight up included), dribble mode, Take Possession (drop the
-  ball right in front of your car), Reset Shot presets (kickoff corners,
-  midfield, aerial drop, goal line) and a 0–150% game speed slider.
-- **Flip reset indicator** — Rocket League's glowing hollow disc under the car
-  while you're holding a reset: it flashes when your wheels plant mid-air and
-  stays lit until you use the flip or land.
+  (−90°…+90°, straight up included) from wherever it already lies, dribble
+  mode, Take Possession (drop the ball right in front of your car), Reset
+  Shot presets (kickoff corners, midfield, aerial drop, goal line) and a
+  0–150% game speed slider.
+- **Flip reset indicator** — Rocket League's glowing hollow disc under the
+  car's underside while you're holding a reset taken off the ball: it flashes
+  when your wheels plant mid-air and stays lit until you use the flip or land.
+  Wall and ceiling resets grant the flip but never light it (toggle in
+  Settings → Camera).
 - **See-through walls** — walls and ceiling stay glassy like RL, with a Wall
   Opacity slider (invisible → solid).
 - **Full rebinding UI** — keyboard, mouse and gamepad, including individual
