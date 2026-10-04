@@ -136,6 +136,8 @@ void Sim::stepOnce() {
         if (jumpEdge) onCarJump();
     }
     if (onCarFlip && curCar_.hasFlipped && !prevCar_.hasFlipped) onCarFlip();
+    if (onCarSupersonic && curCar_.isSupersonic && !prevCar_.isSupersonic)
+        onCarSupersonic();
 
     // Flip reset (Rocket League's "Flip Reset Indicator" state).
     // RocketSim clears hasJumped/hasDoubleJumped/hasFlipped the tick >=3 wheels

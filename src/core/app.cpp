@@ -268,6 +268,11 @@ int runApp(int argc, char** argv) {
     a.sim.onCarJump = [&a]() { a.audio.playJump(0.85f); };
     a.sim.onCarFlip = [&a]() { a.audio.playJump(1.0f); };
 
+    // ---- supersonic: one-shot on the tick the car first crosses max
+    // velocity (RocketSim's isSupersonic rising edge, not a per-frame check,
+    // so a sustained burst only plays the cue once).
+    a.sim.onCarSupersonic = [&a]() { a.audio.playSupersonic(1.0f); };
+
     applyGraphics(a);
 
     // ---- main loop

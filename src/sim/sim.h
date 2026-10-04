@@ -82,6 +82,10 @@ public:
     std::function<void()> onCarJump;
     std::function<void()> onCarFlip;
 
+    // Called the tick the car crosses into supersonic (rising edge only, so
+    // the sound plays once per burst rather than every tick at speed).
+    std::function<void()> onCarSupersonic;
+
     float tickDt = 1.0f / 120.0f;
     uint64_t ticksSimulated = 0;
 

@@ -6,12 +6,13 @@
 #include <cstring>
 
 // Per-sound mix gains, tuned by ear against the source levels (boost and
-// motor are continuous loops, thud/jump/menu are one-shots).
+// motor are continuous loops, thud/jump/supersonic/menu are one-shots).
 static constexpr float kBoostGain = 0.45f;
 static constexpr float kMotorGain = 0.30f;
 static constexpr float kMenuGain = 0.70f;
 static constexpr float kThudGain = 0.80f;
 static constexpr float kJumpGain = 0.60f;
+static constexpr float kSuperGain = 0.55f;
 
 // Per-sample gain chase: ~26 ms time constant at 48 kHz. Loops fade in and
 // out without clicks; one-shots start AT their target, so this never moves
@@ -31,6 +32,7 @@ bool Audio::init(const std::string& soundDir) {
     if (!load(thud_, soundDir + "/thud.wav")) ok = false;
     if (!load(menu_, soundDir + "/menu.wav")) ok = false;
     if (!load(jump_, soundDir + "/jump.wav")) ok = false;
+    if (!load(supersonic_, soundDir + "/supersonic.wav")) ok = false;
     (void)ok;   // misses are already logged; whatever loaded still plays
 
     SDL_AudioSpec want;
@@ -155,6 +157,9 @@ void Audio::setMotorLoop(bool active, float speed01) {
 void Audio::playMenu(float gain) { playOneShot(menu_, kMenuGain * gain); }
 void Audio::playThud(float gain) { playOneShot(thud_, kThudGain * gain); }
 void Audio::playJump(float gain) { playOneShot(jump_, kJumpGain * gain); }
+void Audio::playSupersonic(float gain) {
+    playOneShot(supersonic_, kSuperGain * gain);
+}
 
 void Audio::playOneShot(const Sound& s, float gain) {
     if (!dev_ || s.frames <= 0 || gain <= 0.0f) return;

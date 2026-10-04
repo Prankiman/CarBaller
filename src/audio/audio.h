@@ -2,8 +2,8 @@
 // Sound effects through SDL2 core audio only - no extra dependency.
 // Loads the WAVs from assets/sounds and mixes two persistent loops
 // (boost, motor) plus one-shot voices (menu click, ball thud/collision,
-// jump/flip) on the SDL audio callback thread. Every failure degrades
-// to silence.
+// jump/flip, supersonic) on the SDL audio callback thread. Every failure
+// degrades to silence.
 
 #include <SDL.h>
 
@@ -29,6 +29,7 @@ public:
     void playMenu(float gain = 1.0f);
     void playThud(float gain);       // 0..1, scaled by impact strength
     void playJump(float gain = 1.0f);  // jumps, double jumps and flips
+    void playSupersonic(float gain = 1.0f);  // fires once at max velocity
 
 private:
     struct Sound {
@@ -61,7 +62,7 @@ private:
     static constexpr int kLoopVoices = 2;   // ... one-shots live above these
     static constexpr int kVoices = 16;
 
-    Sound boost_, motor_, thud_, menu_, jump_;
+    Sound boost_, motor_, thud_, menu_, jump_, supersonic_;
     Voice voices_[kVoices];
     SDL_AudioDeviceID dev_ = 0;
     bool subsystemUp_ = false;
