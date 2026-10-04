@@ -14,6 +14,7 @@ void RLCamera::reset(const SimSnapshot& s, const CameraSettings& cs) {
     yawOff_ = pitchOff_ = 0;
     swivelIdle_ = 0;
     carYaw_ = std::atan2(s.carF.y, s.carF.x);
+    lockYaw_ = carYaw_;
     airTime_ = 0;
     locked_ = false;
     blend_ = (desired_ == CamMode::Ball) ? 1.0f : 0.0f;  // snap, no animation
@@ -63,10 +64,16 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
 // kAirDelay - no nose-following at all yet, so a jump or flip straight off
 // the ground cannot swing it. It then follows the nose for kAirFollowTime
 // (the player's initial pitch/steer still moves the camera point), and the
-// rear/front axis at the end of that window is locked in for the rest of
-// the flight (RL gives the takeoff maneuver this much room).
+// rear/front axis at the end of that window becomes the lock target for the
+// rest of the flight (RL gives the takeoff maneuver this much room).
 static constexpr float kAirDelay = 1.0f;
 static constexpr float kAirFollowTime = 0.5f;
+
+// Per-second rate the car-cam heading chases its target (nose while
+// tracking, lockYaw_ once locked). Shared by both so the hand-off at the
+// end of the follow window keeps the same velocity - the heading settles
+// onto the locked axis instead of snapping to it.
+static constexpr float kYawFollowRate = 12.0f;
 
 // Cap (uu) on how far the smoothed eye trails the ideal rig horizontally
 // while the rig is moving - the lag asymptotes to this value at high speed.
@@ -76,10 +83,11 @@ void RLCamera::computeCarCam(const CameraSettings& cs, const SimSnapshot& s,
                              float dt, V3& outEye, V3& outTarget) {
     // Grounded = the camera sits behind the rear, following the nose
     // heading. Airborne = the heading is held for kAirDelay, then the
-    // follow stays live for kAirFollowTime, then the rear/front axis at
-    // that instant is locked in and held: pitch, roll and yaw afterwards
-    // only translate the camera with the car - they never swing it around -
-    // until the car grounds again and tracking resumes.
+    // follow stays live for kAirFollowTime, then the rear/front axis of
+    // that moment is latched as the lock target and carYaw_ eases onto it
+    // at the same rate it was following the nose: pitch, roll and yaw
+    // afterwards only translate the camera with the car - they never swing
+    // it around - until the car grounds again and tracking resumes.
     const float fxy = std::sqrt(s.carF.x * s.carF.x + s.carF.y * s.carF.y);
 
     bool track;
@@ -96,11 +104,12 @@ void RLCamera::computeCarCam(const CameraSettings& cs, const SimSnapshot& s,
             // with - the nose cannot move the camera yet.
             track = false;
         } else if (airTime_ >= kAirDelay + kAirFollowTime) {
-            // Window over: determine the camera point from the rear/front
+            // Window over: latch the camera heading from the rear/front
             // axis of this moment (the tracked heading is kept when the nose
             // points straight up/down, where the horizontal projection is no
-            // direction).
-            if (fxy > 0.15f) carYaw_ = std::atan2(s.carF.y, s.carF.x);
+            // direction). Setting the target - rather than carYaw_ itself -
+            // is what keeps the end of the follow window continuous.
+            lockYaw_ = (fxy > 0.15f) ? std::atan2(s.carF.y, s.carF.x) : carYaw_;
             locked_ = true;
             track = false;
         } else {
@@ -110,11 +119,14 @@ void RLCamera::computeCarCam(const CameraSettings& cs, const SimSnapshot& s,
 
     // Nose projected on the ground plane: well-defined on floor, ceiling
     // and walls, degenerate only while the nose points straight up or down,
-    // where the heading is simply held instead of snapping on noise.
-    if (track && fxy > 0.15f) {
-        const float desiredYaw = std::atan2(s.carF.y, s.carF.x);
-        const float delta = wrapAngle(desiredYaw - carYaw_);
-        carYaw_ += delta * std::min(12.0f * dt, 1.0f);
+    // where the heading is simply held instead of snapping on noise. Once
+    // locked, the same easing runs against the latched lockYaw_ so the
+    // heading glides onto the locked axis (and stops) instead of jumping.
+    const bool haveTarget = locked_ || (track && fxy > 0.15f);
+    if (haveTarget) {
+        const float targetYaw = locked_ ? lockYaw_ : std::atan2(s.carF.y, s.carF.x);
+        const float delta = wrapAngle(targetYaw - carYaw_);
+        carYaw_ += delta * std::min(kYawFollowRate * dt, 1.0f);
     }
 
     float lookYaw = carYaw_ + yawOff_;
