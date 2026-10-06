@@ -45,9 +45,12 @@ private:
 
     // Car-cam heading: follows the nose while grounded. In the air it is
     // held at the takeoff axis for kAirDelay, follows the nose for
-    // kAirFollowTime, then the rear/front axis at that instant becomes the
-    // lock target and carYaw_ eases onto it (no snap) before being held
-    // until the car touches ground again.
+    // kAirFollowTime - with a gain that rises as that window closes, so the
+    // heading has arrived on the nose axis by the end - and the rear/front
+    // axis at that instant becomes the lock target. The whole decision
+    // (back vs. front of the car) therefore completes kAirDelay +
+    // kAirFollowTime = 2.0s after takeoff and never moves again until the
+    // car touches ground.
     float carYaw_ = 0;
     float lockYaw_ = 0;          // heading the air-follow window settled on
     float airTime_ = 0;          // seconds since leaving the surface

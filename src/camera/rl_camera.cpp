@@ -62,18 +62,38 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
 
 // After leaving a surface the camera first HOLDS the takeoff heading for
 // kAirDelay - no nose-following at all yet, so a jump or flip straight off
-// the ground cannot swing it. It then follows the nose for kAirFollowTime
+// the ground cannot swing it. This is the undecided phase: the camera
+// keeps the world heading it left the surface with while the car may
+// already be rotating, so its back/front position relative to the car is
+// deliberately still open. It then follows the nose for kAirFollowTime
 // (the player's initial pitch/steer still moves the camera point), and the
-// rear/front axis at the end of that window becomes the lock target for the
-// rest of the flight (RL gives the takeoff maneuver this much room).
-static constexpr float kAirDelay = 1.0f;
-static constexpr float kAirFollowTime = 0.5f;
+// rear/front axis at the end of that window is locked in for the rest of
+// the flight: 1.4s hold + 0.6s live follow = 2.0s total, with all of the
+// extra length in the hold so it reads as a longer initial wait rather than
+// a slower settle - the pre-change config reached 1.5s the other way round
+// (1.0s hold + 0.5s follow, and no closing gain, so it eased onto the axis
+// for a while after the window had already closed).
+static constexpr float kAirDelay = 1.4f;
+static constexpr float kAirFollowTime = 0.6f;
+// 1e-5 of slop: 1.4f + 0.6f rounds a hair off 2.0f in binary.
+static_assert(kAirDelay + kAirFollowTime <= 2.0f + 1e-5f,
+              "air heading must be decided within 2.0s of takeoff");
 
 // Per-second rate the car-cam heading chases its target (nose while
-// tracking, lockYaw_ once locked). Shared by both so the hand-off at the
-// end of the follow window keeps the same velocity - the heading settles
-// onto the locked axis instead of snapping to it.
+// tracking, lockYaw_ once locked). Grounded tracking and the air follow
+// both start here; inside the air follow window the rate additionally gets
+// the time-left gain below, so the hand-off into the lock carries no
+// velocity at all - the heading has already arrived on the axis it locks.
 static constexpr float kYawFollowRate = 12.0f;
+
+// Air-follow gain expressed per second of window left: as the window
+// closes, rate = kLockGain / secondsLeft takes over from kYawFollowRate and
+// the tracking error decays like ((left / window)^kLockGain) - it reaches
+// zero, smoothly and with zero velocity, at the instant the axis is locked.
+// So the lock is a STOP, not a swing: after the window the camera's back/
+// front position relative to the car is final, and the post-lock easing has
+// (at most) a one-frame nose flip-flop left to absorb.
+static constexpr float kLockGain = 2.5f;
 
 // Cap (uu) on how far the smoothed eye trails the ideal rig horizontally
 // while the rig is moving - the lag asymptotes to this value at high speed.
@@ -83,11 +103,13 @@ void RLCamera::computeCarCam(const CameraSettings& cs, const SimSnapshot& s,
                              float dt, V3& outEye, V3& outTarget) {
     // Grounded = the camera sits behind the rear, following the nose
     // heading. Airborne = the heading is held for kAirDelay, then the
-    // follow stays live for kAirFollowTime, then the rear/front axis of
-    // that moment is latched as the lock target and carYaw_ eases onto it
-    // at the same rate it was following the nose: pitch, roll and yaw
-    // afterwards only translate the camera with the car - they never swing
-    // it around - until the car grounds again and tracking resumes.
+    // follow stays live for kAirFollowTime (converging onto the nose axis as
+    // the window closes), then the rear/front axis of that moment is latched
+    // as the lock target: pitch, roll and yaw afterwards only translate the
+    // camera with the car - they never swing it around - until the car
+    // grounds again and tracking resumes. The whole decision takes
+    // kAirDelay + kAirFollowTime = 2.0s from takeoff, so by 2.0s the
+    // back/front position is fixed for the rest of the flight.
     const float fxy = std::sqrt(s.carF.x * s.carF.x + s.carF.y * s.carF.y);
 
     bool track;
@@ -108,7 +130,9 @@ void RLCamera::computeCarCam(const CameraSettings& cs, const SimSnapshot& s,
             // axis of this moment (the tracked heading is kept when the nose
             // points straight up/down, where the horizontal projection is no
             // direction). Setting the target - rather than carYaw_ itself -
-            // is what keeps the end of the follow window continuous.
+            // is what keeps the end of the follow window continuous; with
+            // the time-left gain below carYaw_ is already sitting on that
+            // axis, so nothing visibly moves here.
             lockYaw_ = (fxy > 0.15f) ? std::atan2(s.carF.y, s.carF.x) : carYaw_;
             locked_ = true;
             track = false;
@@ -126,7 +150,16 @@ void RLCamera::computeCarCam(const CameraSettings& cs, const SimSnapshot& s,
     if (haveTarget) {
         const float targetYaw = locked_ ? lockYaw_ : std::atan2(s.carF.y, s.carF.x);
         const float delta = wrapAngle(targetYaw - carYaw_);
-        carYaw_ += delta * std::min(kYawFollowRate * dt, 1.0f);
+        float rate = kYawFollowRate;
+        if (!locked_ && !s.onGround) {
+            // Closing gain: the chase starts at the plain follow rate and
+            // only picks up as the seconds left in the window run out, so
+            // the heading lands on the nose axis - with no lag left - at the
+            // exact frame the axis is latched.
+            const float left = std::max(kAirDelay + kAirFollowTime - airTime_, 1e-3f);
+            rate = std::max(rate, kLockGain / left);
+        }
+        carYaw_ += delta * std::min(rate * dt, 1.0f);
     }
 
     float lookYaw = carYaw_ + yawOff_;
