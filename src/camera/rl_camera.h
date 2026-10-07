@@ -36,6 +36,12 @@ private:
     void computeBallCam(const CameraSettings& cs, const SimSnapshot& s, float dt,
                         V3& outEye, V3& outTarget);
     void computeCarCam(const CameraSettings& cs, const SimSnapshot& s, float dt, V3& outEye, V3& outTarget);
+    // Shared eye placement for both rigs: swings the rig around the car on a
+    // sphere (yaw AND pitch swivel orbit; see the note in the .cpp) and hands
+    // back the part of the pitch swivel the orbit could not absorb - the
+    // caller adds that to the view pitch instead of pitchOff_.
+    void placeEye(const CameraSettings& cs, const SimSnapshot& s,
+                  float lookYaw, V3& outEye, float& outTilt) const;
 
     CamMode desired_ = CamMode::Ball;
     float blend_ = 1.0f;        // 0 = car cam, 1 = ball cam
@@ -52,7 +58,10 @@ private:
     bool hasBallAim_ = false;   // aim state anchored to a snapshot
     bool hasPrevPhi_ = false;   // prevPhi_ holds a real measurement
 
-    float yawOff_ = 0;          // swivel offsets (rad)
+    // Swivel offsets (rad): both swing the rig AROUND the car (see
+    // placeEye). Only the part of the pitch offset the orbit cannot absorb
+    // reaches the view as a plain tilt.
+    float yawOff_ = 0;
     float pitchOff_ = 0;
     float swivelIdle_ = 0;       // seconds since the last swivel input
 
@@ -70,6 +79,9 @@ private:
     bool locked_ = false;        // air heading determined for this flight
     V3 smoothedEye_{0, 0, 0};
     V3 prevWantEye_{0, 0, 0};    // previous ideal eye, for rig speed
+    float prevRigOffZ_ = 0;      // previous rig-relative eye height: splits the
+                                 // swivel's own vertical motion off from the
+                                 // car's (the latter keeps the stiffness lag)
     bool hasSmoothed_ = false;
 
     // One-euro filtered look-at point: the aim follows a resting/bouncing

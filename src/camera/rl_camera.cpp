@@ -32,6 +32,7 @@ void RLCamera::reset(const SimSnapshot& s, const CameraSettings& cs) {
         computeCarCam(cs, s, 0.0f, e, t);
     smoothedEye_ = e;
     prevWantEye_ = e;
+    prevRigOffZ_ = e.z - s.carPos.z;
     hasSmoothed_ = true;
     smoothTarget_ = t;
     prevWantT_ = t;
@@ -72,6 +73,53 @@ static constexpr float kBallAimEps = 5.0f;
 // over ~0.15 s instead of jumping. Note this is deliberately above the car
 // cam's nose-follow rate: the nose is never degenerate, the ball bearing is.
 static constexpr float kBallAimSlew = 20.0f;
+
+// ---------------------------------------------------------------- eye placement
+//
+// Both rigs used to sit at `carPos - fwd * distance + (0,0,height)` and feed
+// the pitch swivel into the VIEW ONLY. That made the two axes asymmetric:
+// left/right swung the eye around the car (the car held its place on screen
+// while the world swept past), while up/down rotated the camera around its own
+// starting point - a fixed eye and a tilting view, so the car slid across the
+// screen. Rocket League rotates around the car on both axes, so the pitch
+// swivel now swings the rig too.
+//
+// The default pose is one point on a sphere of radius R = hypot(distance,
+// height) at elevation e0 = atan2(height, distance): pitchOff_ shifts the
+// elevation (looking up carries the eye down, looking down carries it up),
+// and the view pitch is then derived from wherever the eye actually ended up,
+// which keeps the car at a constant screen offset for the whole swing. What
+// the orbit cannot absorb comes back as a tilt - `outTilt` - so the control
+// never goes dead.
+//
+// The one hard stop is the floor: the renderer always draws it opaque
+// (Renderer::render), so an eye below it would look at the car through solid
+// ground. On the ground the limit is the surface the car rests on (the corner
+// ramps rise well above z = 0); in the air only the floor itself matters, so
+// the full swing stays available exactly where it is most used - looking up
+// mid-air. Past either stop the rest of the swivel degrades into the old
+// tilt, smoothly and without a jump.
+static constexpr float kEyeFloorZ = 16.0f;      // uu: eye stays above the arena floor
+static constexpr float kCarRideHeight = 17.0f;  // car center above the surface it sits on
+static constexpr float kMaxElev = 1.5f;         // rad: keep the eye behind the car (cos > 0)
+
+void RLCamera::placeEye(const CameraSettings& cs, const SimSnapshot& s,
+                        float lookYaw, V3& outEye, float& outTilt) const {
+    const float rigR = std::hypot(cs.distance, cs.height);
+    const float e0 = std::atan2(cs.height, cs.distance);
+
+    float elev = e0 - pitchOff_;
+
+    const float minZ = s.onGround ? std::max(kEyeFloorZ, s.carPos.z - kCarRideHeight)
+                                  : kEyeFloorZ;
+    const float sinMin = clampf((minZ - s.carPos.z) / rigR, -1.0f, 1.0f);
+    elev = std::max(elev, std::asin(sinMin));
+    elev = clampf(elev, -kMaxElev, kMaxElev);
+
+    const V3 fwd(std::cos(lookYaw), std::sin(lookYaw), 0);
+    outEye = s.carPos - fwd * (rigR * std::cos(elev)) + V3(0, 0, rigR * std::sin(elev));
+    outTilt = pitchOff_ - (e0 - elev);   // swivel the rig could not take up
+}
 
 void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
                               float dt, V3& outEye, V3& outTarget) {
@@ -119,9 +167,8 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
     }
 
     float lookYaw = ballYaw_ + yawOff_;
-    V3 fwd(std::cos(lookYaw), std::sin(lookYaw), 0);
-
-    outEye = s.carPos - fwd * cs.distance + V3(0, 0, cs.height);
+    float tilt;      // pitch swivel the orbit could not absorb (see placeEye)
+    placeEye(cs, s, lookYaw, outEye, tilt);
 
     // ---- vertical aim: same treatment, minus the branch (the elevation of
     // a point above the horizon plane is single-valued). What this buys is
@@ -132,7 +179,7 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
     if (first) ballPitch_ = measPitch;
     else ballPitch_ += clampf(measPitch - ballPitch_, -slewStep, slewStep);
 
-    float pitch = clampf(ballPitch_ + cs.angle * (float)M_PI / 180.0f + pitchOff_,
+    float pitch = clampf(ballPitch_ + cs.angle * (float)M_PI / 180.0f + tilt,
                          -1.4f, 1.4f);
 
     V3 dir = dirFromYawPitch(lookYaw, pitch);
@@ -178,8 +225,11 @@ static constexpr float kYawFollowRate = 12.0f;
 // (at most) a one-frame nose flip-flop left to absorb.
 static constexpr float kLockGain = 2.5f;
 
-// Cap (uu) on how far the smoothed eye trails the ideal rig horizontally
-// while the rig is moving - the lag asymptotes to this value at high speed.
+// Cap (uu) on how far the smoothed eye trails the ideal rig while the RIG
+// itself is moving - horizontally (swivel, car turns, boost) and vertically
+// (the pitch swivel carrying the eye around the car); the lag asymptotes to
+// this value at high speed. It is deliberately never applied to the car's own
+// motion, which is what keeps RL's stiffness lag (jumps, aerials) intact.
 static constexpr float kRigLagCap = 40.0f;
 
 void RLCamera::computeCarCam(const CameraSettings& cs, const SimSnapshot& s,
@@ -193,6 +243,8 @@ void RLCamera::computeCarCam(const CameraSettings& cs, const SimSnapshot& s,
     // grounds again and tracking resumes. The whole decision takes
     // kAirDelay + kAirFollowTime = 2.0s from takeoff, so by 2.0s the
     // back/front position is fixed for the rest of the flight.
+    // The eye itself (behind the rear, and around the car under the pitch
+    // swivel) is placed by placeEye below.
     const float fxy = std::sqrt(s.carF.x * s.carF.x + s.carF.y * s.carF.y);
 
     bool track;
@@ -246,14 +298,13 @@ void RLCamera::computeCarCam(const CameraSettings& cs, const SimSnapshot& s,
     }
 
     float lookYaw = carYaw_ + yawOff_;
-    V3 fwd(std::cos(lookYaw), std::sin(lookYaw), 0);
-
-    outEye = s.carPos - fwd * cs.distance + V3(0, 0, cs.height);
+    float tilt;      // pitch swivel the orbit could not absorb (see placeEye)
+    placeEye(cs, s, lookYaw, outEye, tilt);
 
     V3 aim = s.carPos + V3(0, 0, cs.height * 0.25f);
     V3 toT = aim - outEye;
     float basePitch = std::atan2(toT.z, std::max(toT.len2d(), 1.0f));
-    float pitch = clampf(basePitch + cs.angle * (float)M_PI / 180.0f + pitchOff_,
+    float pitch = clampf(basePitch + cs.angle * (float)M_PI / 180.0f + tilt,
                          -1.4f, 1.4f);
 
     V3 dir = dirFromYawPitch(lookYaw, pitch);
@@ -305,15 +356,16 @@ void RLCamera::update(float dt, const CameraSettings& cs, const SimSnapshot& s,
     // ---- stiffness: position follow smoothing. Rocket League's stiffness
     // shows up as world-space lag: jumps displace the camera and it
     // recenters, and during an aerial the eye lingers near the spot that was
-    // behind the car at takeoff instead of climbing rigidly with it. Only
-    // the vertical axis gets that treatment - horizontal follow stays tight
-    // so fast forward flight doesn't drag the camera far behind the car.
+    // behind the car at takeoff instead of climbing rigidly with it. That
+    // lag belongs to the CAR's motion: horizontal follow below stays tight
+    // so fast forward flight doesn't drag the camera far behind the car, and
+    // vertical follow keeps its slow rate for the jumps/aerials.
     //
     // Everything here is a per-SECOND rate; the per-frame factor is always
     // 1 - exp(-rate * dt), which stays in (0,1) for any speed. Adding to the
     // factor instead of the rate lets it exceed 1 and the eye diverges.
     const float followRate = 1.5f + cs.stiffness * 14.0f;
-    const float rateZ = s.onGround ? followRate : followRate * 0.5f;
+    const float baseRateZ = s.onGround ? followRate : followRate * 0.5f;
 
     // A plain exponential follower settles v/rate behind a moving rig - at
     // boost speed (2300 uu/s, default stiffness) that was a whole camera
@@ -321,13 +373,27 @@ void RLCamera::update(float dt, const CameraSettings& cs, const SimSnapshot& s,
     // crept back after the car slowed. The rig-speed term in the horizontal
     // rate makes that lag saturate at kRigLagCap uu instead: rigid at speed
     // like RL, while rest and low-speed recentering keep the original
-    // stiffness response. Vertical follow is untouched - the jump/aerial
-    // linger is the part RL's stiffness actually does.
+    // stiffness response.
     const float dx = wantEye.x - prevWantEye_.x;
     const float dy = wantEye.y - prevWantEye_.y;
     const float rigSpeed2d = std::sqrt(dx * dx + dy * dy) / std::max(dt, 1e-4f);
     const float rateX = followRate + rigSpeed2d / kRigLagCap;
     prevWantEye_ = wantEye;
+
+    // The rig's OWN vertical motion is a different animal: it is the pitch
+    // swivel carrying the eye around the car (placeEye), and trailing that
+    // by the stiffness rate would slide the car across the screen - the very
+    // thing the orbit exists to prevent (at full swivel the ideal eye moves
+    // ~1000 uu/s, which is a 118 uu / 23 deg trail at baseRateZ). Subtracting
+    // the car gives exactly that motion: a jumping or climbing car reads as
+    // zero rig-relative speed and keeps its linger, the swivel reads as its
+    // own speed and picks up the same saturating term the horizontal rate
+    // has. With no vertical swivel this term is identically zero, so the
+    // tuned stiffness response is untouched.
+    const float rigOffZ = wantEye.z - s.carPos.z;
+    const float rigVz = (rigOffZ - prevRigOffZ_) / std::max(dt, 1e-4f);
+    prevRigOffZ_ = rigOffZ;
+    const float rateZ = baseRateZ + std::fabs(rigVz) / kRigLagCap;
 
     const float kx = 1.0f - std::exp(-rateX * dt);
     const float kz = 1.0f - std::exp(-rateZ * dt);

@@ -2,6 +2,11 @@
 // view by a whole pose in a single frame - instead of easing into the new
 // pose? And does it still keep the ball centered while easing?
 //
+// It also checks the car cam's swivel PIVOT: up/down has to rotate the rig
+// around the car (eye moves, car holds its place on screen) the way left/right
+// does, not tilt the view from a fixed eye, and the swinging eye must never
+// drop through the floor.
+//
 // The degenerate cases are the interesting ones: whenever the ball passes
 // over (or under) the car, its horizontal offset from the car runs through
 // zero - where the bearing atan2 returns is undefined - so the ideal rig can
@@ -12,7 +17,7 @@
 // Build (from repo root):
 //   c++ -std=c++20 -O2 -I. -Isrc -Ithird_party tools/probe_camera.cpp src/camera/rl_camera.cpp -o probe_camera
 // Run:
-//   ./probe_camera           (exit 0 = no snap, no centering regression)
+//   ./probe_camera           (exit 0 = no snap, no centering/pivot regression)
 //
 // Numbers before the ball-cam aim slew (kBallAimSlew) was added, same probe:
 //   A overhead crossing : eyeStep 516 uu  rotStep 75 deg
@@ -164,6 +169,75 @@ Metrics run(const Case& c) {
     return m;
 }
 
+// ---- car-cam swivel pivot. Up/down used to rotate the camera around its own
+// starting point (fixed eye, tilting view: the car slid across the frame)
+// while left/right orbited the car. Both axes now swing the rig on a sphere
+// around the car, so over a window inside the swivel's orbit range the eye
+// must travel a real distance AND the car must stay put on screen. The eye
+// also never drops through the floor (the renderer draws it opaque), for the
+// whole run, not just the window.
+struct Swivel {
+    const char* name;
+    float swY;        // +1 = look up (swings the eye down), -1 = look down
+    float carZ;       // car center height (uu)
+    bool onGround;
+    float minTravel;  // uu the eye must cover inside the centering window
+};
+
+const Swivel kSwivels[] = {
+    {"up, ground",     1.0f,  17.0f, true,  60},
+    {"down, ground",  -1.0f,  17.0f, true,  60},
+    {"up, air",        1.0f, 500.0f, false, 60},
+    {"down, air",     -1.0f, 500.0f, false, 60},
+};
+
+bool checkSwivelPivot() {
+    constexpr float kWindow = 0.10f;  // s: pitchOff is still fully inside the
+                                      // orbit range at default settings
+    constexpr float kMaxOff = 8.0f;   // deg the car may drift off the view axis
+    constexpr float kMinEyeZ = 15.5f; // uu: never through the arena floor
+
+    bool ok = true;
+    std::printf("\n=== car-cam swivel pivot (eye travels, car stays put) ===\n");
+    for (const Swivel& v : kSwivels) {
+        CameraSettings cs;  // shipped defaults
+        RLCamera cam;
+        SimSnapshot s = makeSnap(V3(0, 0, v.carZ), V3(1, 0, 0),
+                                 V3(0, 0, v.carZ));
+        s.onGround = v.onGround;
+        cam.reset(s, cs);
+        cam.setMode(CamMode::Car);
+        cam.update(kFrameDt, cs, s, 0, 0);
+        const float startZ = cam.eye.z;
+
+        float travel = 0, maxOff = 0, minZ = cam.eye.z;
+        for (int i = 0; i < int(1.0f / kFrameDt); i++) {
+            cam.update(kFrameDt, cs, s, 0, v.swY);
+            if (i * kFrameDt < kWindow) travel = std::fabs(cam.eye.z - startZ);
+
+            const V3 toCar = s.carPos - cam.eye;
+            const V3 dir = (cam.target - cam.eye).norm();
+            const float horiz = std::sqrt(toCar.x * toCar.x + toCar.y * toCar.y);
+            const float elevCar = std::atan2(toCar.z, horiz);
+            const float elevView = std::atan2(dir.z,
+                                              std::sqrt(dir.x * dir.x + dir.y * dir.y));
+            if (i * kFrameDt < kWindow)
+                maxOff = std::fmax(maxOff, std::fabs(elevCar - elevView) * 57.2957795f);
+            minZ = std::fmin(minZ, cam.eye.z);
+        }
+
+        const bool okTravel = travel >= v.minTravel;
+        const bool okCenter = maxOff <= kMaxOff;
+        const bool okFloor = minZ >= kMinEyeZ;
+        if (!(okTravel && okCenter && okFloor)) ok = false;
+        std::printf("%-14s %s travel %5.1f/%3.0f uu  car off-axis %4.1f/%2.0f deg"
+                    "  eye min z %6.1f uu\n",
+                    v.name, (okTravel && okCenter && okFloor) ? "ok  " : "FAIL",
+                    travel, v.minTravel, maxOff, kMaxOff, minZ);
+    }
+    return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -182,6 +256,7 @@ int main() {
                     m.maxRotStep, c.maxRotStep, m.maxCenterErr, c.maxCenter,
                     m.rmsCenterErr);
     }
-    std::printf("%s\n", failed ? "SNAP/CENTERING REGRESSION" : "no snaps, centering ok");
+    if (!checkSwivelPivot()) failed++;
+    std::printf("\n%s\n", failed ? "SNAP/CENTERING/PIVOT REGRESSION" : "no snaps, centering ok, swivel orbits the car");
     return failed ? 1 : 0;
 }
