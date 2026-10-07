@@ -3,6 +3,7 @@
 // with render-rate interpolation, and freeplay actions.
 
 #include "../core/math.h"
+#include "../maploader/map_physics.h"
 #include "../settings/settings.h"
 
 #include "RocketSim/src/Sim/Arena/Arena.h"
@@ -66,7 +67,28 @@ public:
     // ahead of the car - freeplay "give me the ball".
     void takePossession();
     // Car to a kickoff/drop preset, ball back to the middle at rest.
+    // With a custom map loaded the preset is ignored and the current
+    // checkpoint's spawn/ball positions are used instead.
     void resetShot(int presetIndex);
+
+    // --- custom maps (cooked UE3 .udk/.upk packages) ---------------------
+    // Parses `path` and swaps the arena's static collision for the map's
+    // geometry, then puts car and ball on the first checkpoint. Any failure
+    // falls back to the default soccar arena and describes itself in *err
+    // (the caller turns that into a top-right toast).
+    // Convenience: parse `path` and apply it (blocks the calling thread).
+    bool loadMap(const std::string& path, std::string* err);
+    // Apply an already-parsed package. This is the half that has to run on
+    // the simulation thread; parsing itself can happen on a worker thread.
+    // On failure the arena is left on the default collision.
+    bool applyMap(maploader::MapData&& data, std::string* err);
+    void unloadMap();
+    bool hasMap() const { return mapLoaded_; }
+    const maploader::MapData& mapData() const { return map_; }
+    int sessionCount() const { return (int)map_.sessions.size(); }
+    int sessionIndex() const { return session_; }
+    // Previous/next checkpoint (wraps around) - repositions car and ball.
+    void cycleSession(int delta);
 
     void applyControlSettings(const ControlSettings& cs);
 
@@ -101,9 +123,18 @@ private:
     // Fire onBallSurfaceHit when the ball's incoming velocity shows a real
     // impact against one of the arena shell planes.
     void detectSurfaceHit(bool carHitThisTick);
+    // Driving within reach of a checkpoint's spawn marks it as reached, so
+    // Reset Shot can send car and ball back there.
+    void updateSessionByProximity();
 
     RocketSim::Arena* arena_ = nullptr;
     RocketSim::Car* car_ = nullptr;
+
+    // Loaded custom map (empty / inactive when playing the default arena).
+    maploader::MapData map_;
+    maploader::MapCollision* mapCol_ = nullptr;
+    bool mapLoaded_ = false;
+    int session_ = 0;                 // checkpoint Reset Shot returns to
 
     RocketSim::CarState prevCar_{}, curCar_{};
     RocketSim::BallState prevBall_{}, curBall_{};

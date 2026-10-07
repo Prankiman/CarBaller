@@ -4,6 +4,7 @@
 
 #include "../camera/rl_camera.h"
 #include "../fx/particles.h"
+#include "../maploader/map_data.h"
 #include "assets.h"
 
 struct RenderParams {
@@ -29,6 +30,13 @@ public:
     // ballRadius: collision radius in uu. Zeroed dims disable the outlines.
     void setHitboxDims(const V3& carSize, const V3& carOffset, float ballRadius);
 
+    // Custom map geometry (Map tab): one VBO per unique mesh, drawn once per
+    // placement with that placement's transform. While active the default
+    // arena, its shell and its field markings are not drawn at all. Passing
+    // null (or an empty map) restores the arena.
+    void setMap(const maploader::MapData* data);
+    bool hasMap() const { return !mapInst_.empty(); }
+
     void render(const RLCamera& cam, const RenderParams& p, const ParticleSystem& ps);
 
     // World -> screen (pixels). Returns false when behind the camera.
@@ -41,10 +49,25 @@ private:
     void drawUnlit(const GpuMesh& mesh, const M4& model, float alphaMul,
                    bool additive, bool textured = false);
 
+    // One drawn instance of custom map geometry: its local -> world transform
+    // plus the world AABB that transform produces, for frustum culling.
+    struct MapInst {
+        M4 xform;
+        V3 bmin, bmax;
+        uint32_t mesh = 0;
+    };
+    void buildFrustum();
+    bool aabbVisible(const V3& mn, const V3& mx) const;
+
     GameAssets assets_;
     Shader lit_, unlit_;
     M4 view_, proj_;
     int w_ = 0, h_ = 0;
+
+    std::vector<GpuMesh> mapMesh_;   // one per MapShape
+    std::vector<MapInst> mapInst_;   // one per visible placement
+    float mapFar_ = 0;               // far-plane extent needed by the map
+    float frustum_[6][4] = {};       // clip-space planes, rebuilt each frame
 
     GpuMesh particleMesh_;
     GpuMesh hitboxCar_, hitboxBall_;

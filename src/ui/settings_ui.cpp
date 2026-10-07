@@ -5,7 +5,12 @@
 
 #include <imgui.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cfloat>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
 #include <string>
 
 namespace {
@@ -157,12 +162,8 @@ void drawControlsTab(ControlSettings& c, bool& changed) {
 
 void drawFreeplayTab(FreeplaySettings& f, bool& changed) {
     static const char* kPresets[] = {
-        "Blue Corner Kickoff",
-        "Orange Corner Kickoff",
-        "Midfield (Blue Half)",
-        "Midfield (Orange Half)",
-        "Aerial Drop",
-        "Blue Goal Line",
+        resetShotPresetName(0), resetShotPresetName(1), resetShotPresetName(2),
+        resetShotPresetName(3), resetShotPresetName(4), resetShotPresetName(5),
     };
 
     sliderF("Game Speed", &f.gameSpeed, 0.0f, 150.0f, "%.0f%%", changed,
@@ -360,7 +361,7 @@ void drawResetTab(Settings& settings, InputSystem& input, bool& changed) {
 
 // ------------------------------------------------------------------------ draw
 
-bool SettingsUI::draw(Settings& settings, InputSystem& input, bool* pOpen) {
+bool SettingsUI::draw(Settings& settings, InputSystem& input, bool* pOpen, MapTabState& map) {
     anyChanged = false;
     bool& changed = anyChanged;
 
@@ -386,6 +387,14 @@ bool SettingsUI::draw(Settings& settings, InputSystem& input, bool* pOpen) {
         if (ImGui::BeginTabItem("Freeplay")) {
             ImGui::PushID("Freeplay");
             drawFreeplayTab(settings.freeplay, changed);
+            ImGui::PopID();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Map", nullptr,
+                                selectMapTab ? ImGuiTabItemFlags_SetSelected : 0)) {
+            selectMapTab = false;
+            ImGui::PushID("Map");
+            drawMapTab(map, changed);
             ImGui::PopID();
             ImGui::EndTabItem();
         }
@@ -418,4 +427,174 @@ bool SettingsUI::draw(Settings& settings, InputSystem& input, bool* pOpen) {
 
     ImGui::End();
     return anyChanged;
+}
+
+// ------------------------------------------------------------------- Map tab
+
+namespace {
+
+bool isMapExt(const std::string& name) {
+    const size_t dot = name.find_last_of('.');
+    if (dot == std::string::npos) return false;
+    std::string e = name.substr(dot + 1);
+    for (char& c : e) c = (char)std::tolower((unsigned char)c);
+    return e == "udk" || e == "upk";
+}
+
+}  // namespace
+
+void SettingsUI::refreshBrowse() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    if (browseDir_.empty()) {
+        const char* first[] = {"downloaded_maps", "maps", "."};
+        for (const char* c : first) {
+            if (fs::is_directory(c, ec)) {
+                browseDir_ = fs::absolute(c, ec).string();
+                break;
+            }
+        }
+        if (browseDir_.empty()) browseDir_ = fs::current_path(ec).string();
+    }
+
+    browseRows_.clear();
+    browseError_ = false;
+
+    std::vector<std::string> dirs, files;
+    fs::directory_iterator it(browseDir_, ec);
+    if (ec) {
+        browseError_ = true;
+        return;
+    }
+    const fs::directory_iterator end;
+    for (; it != end; it.increment(ec)) {
+        if (ec) {
+            browseError_ = true;
+            return;
+        }
+        const std::string name = it->path().filename().string();
+        if (name.empty() || name[0] == '.') continue;  // skips "." and ".."
+        std::error_code tec;
+        if (it->is_directory(tec)) {
+            dirs.push_back(name);
+        } else if (!tec && isMapExt(name)) {
+            files.push_back(name);
+        }
+    }
+
+    std::sort(dirs.begin(), dirs.end());
+    std::sort(files.begin(), files.end());
+
+    const fs::path cur = fs::path(browseDir_).lexically_normal();
+    if (cur.has_parent_path() && cur.parent_path() != cur) browseRows_.emplace_back("..", true);
+    for (const std::string& d : dirs) browseRows_.emplace_back(d, true);
+    for (const std::string& f : files) browseRows_.emplace_back(f, false);
+}
+
+void SettingsUI::drawMapTab(MapTabState& map, bool& changed) {
+    (void)changed;  // the Map tab changes nothing that needs saving
+    if (browseDir_.empty()) refreshBrowse();
+
+    // ---- status -------------------------------------------------------
+    if (map.loading) {
+        ImGui::TextColored(ImVec4(1.0f, 0.80f, 0.25f, 1.0f), "Loading %s ...",
+                           map.loadingName.c_str());
+    } else if (map.loaded) {
+        ImGui::TextColored(ImVec4(0.45f, 0.90f, 0.55f, 1.0f), "Playing: %s",
+                           map.loadedName.c_str());
+    } else {
+        ImGui::TextUnformatted("Default arena (no custom map)");
+    }
+
+    if (map.loaded && map.sessions > 0) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("Checkpoint %d / %d", map.session + 1, map.sessions);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("< Previous")) map.cycleRequest -= 1;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Next >")) map.cycleRequest += 1;
+        ImGui::TextDisabled("Launch Ball / Take Possession step through these too");
+    } else if (map.loaded) {
+        ImGui::TextDisabled("This map has no checkpoints; Reset Shot returns to the start.");
+    }
+
+    if (!map.error.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.42f, 1.0f));
+        ImGui::TextWrapped("%s", map.error.c_str());
+        ImGui::PopStyleColor();
+    }
+
+    ImGui::Separator();
+
+    // ---- manual path entry -------------------------------------------
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Path:");
+    ImGui::SameLine();
+    // reserve room for whatever buttons follow on this row
+    ImGui::PushItemWidth(map.loaded ? -196.0f : -92.0f);
+    const bool enter =
+        ImGui::InputText("##mappath", pathBuf_, sizeof(pathBuf_),
+                         ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::PopItemWidth();
+    ImGui::SameLine();
+
+    bool doLoad = false;
+    if (map.loading) {
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
+        ImGui::Button("Load");
+        ImGui::PopStyleVar();
+    } else if (ImGui::Button("Load") || (enter && pathBuf_[0] != '\0')) {
+        doLoad = true;
+    }
+    if (doLoad) map.loadRequest = pathBuf_;
+
+    if (map.loaded) {
+        ImGui::SameLine();
+        if (ImGui::Button("Default arena")) map.unloadRequest = true;
+    }
+
+    ImGui::Separator();
+
+    // ---- browser ------------------------------------------------------
+    if (ImGui::SmallButton("Up")) {
+        std::filesystem::path p = std::filesystem::path(browseDir_).parent_path();
+        if (p.empty()) p = "/";
+        browseDir_ = p.string();
+        refreshBrowse();
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Refresh")) refreshBrowse();
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", browseDir_.c_str());
+
+    if (browseError_) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.42f, 1.0f));
+        ImGui::TextUnformatted("Cannot read this folder.");
+        ImGui::PopStyleColor();
+    }
+
+    ImGui::BeginChild("##mapfiles", ImVec2(0, 230), true);
+    for (size_t i = 0; i < browseRows_.size(); i++) {
+        const std::string& name = browseRows_[i].first;
+        const bool isDir = browseRows_[i].second;
+        ImGui::PushID((int)i);
+        const std::string label = (isDir ? "> " : "") + name;
+        if (ImGui::Selectable(label.c_str(), false) && !map.loading) {
+            const std::filesystem::path p = std::filesystem::path(browseDir_) / name;
+            if (isDir) {
+                browseDir_ = p.lexically_normal().string();
+                refreshBrowse();
+            } else {
+                const std::string full = p.string();
+                std::snprintf(pathBuf_, sizeof(pathBuf_), "%s", full.c_str());
+                map.loadRequest = full;
+            }
+        }
+        if (!isDir) ImGui::SetItemTooltip("Load this map");
+        ImGui::PopID();
+    }
+    if (browseRows_.empty() && !browseError_)
+        ImGui::TextDisabled("No .udk / .upk files in this folder.");
+    ImGui::EndChild();
 }

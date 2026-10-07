@@ -7,15 +7,19 @@
 #include <backends/imgui_impl_sdl2.h>
 #include <imgui_internal.h>  // ImGui::GetActiveID for the menu click sound
 
+#include <atomic>
 #include <cstdlib>
 #include <filesystem>
+#include <memory>
 #include <thread>
+#include <vector>
 #include <cstdio>
 
 #include "../audio/audio.h"
 #include "../camera/rl_camera.h"
 #include "../fx/particles.h"
 #include "../input/input.h"
+#include "../maploader/map_loader.h"
 #include "../render/renderer.h"
 #include "../settings/settings.h"
 #include "../sim/sim.h"
@@ -27,6 +31,29 @@
 #endif
 
 namespace {
+
+// One in-flight map parse. The expensive part (package read, mesh / actor /
+// collision walk) runs on this thread; the simulation only ever sees the
+// finished MapData, so nothing is shared while it is being built.
+struct MapJob {
+    std::string path;
+    std::string name;
+    maploader::MapData data;
+    std::string error;
+    bool ok = false;
+    std::atomic<bool> done{false};
+    std::thread th;
+
+    ~MapJob() {
+        if (th.joinable()) th.join();
+    }
+};
+
+struct Toast {
+    std::string text;
+    double until = 0;   // nowSec after which it disappears
+    bool error = false; // red instead of neutral
+};
 
 struct App {
     Settings settings;
@@ -54,7 +81,31 @@ struct App {
     // wall-clock seconds (for debouncing hit feedback)
     double nowSec = 0;
     double lastHitFx = -1.0;
+
+    // ---- custom maps
+    MapTabState mapTab;
+    bool rendererMapOn = false;         // renderer currently holds map geometry
+    std::unique_ptr<MapJob> mapJob;     // parse in flight (worker thread)
+    std::vector<Toast> toasts;          // top-right status/error messages
 };
+
+// Top-right notification stack. Failures are what the user most needs to see
+// (a bad path otherwise just silently drops them back in the default arena).
+void pushToast(App& a, const std::string& text, double seconds = 4.0,
+               bool error = false) {
+    Toast t;
+    t.text = text;
+    t.until = a.nowSec + seconds;
+    t.error = error;
+    a.toasts.push_back(std::move(t));
+    // keep the stack small: oldest go first
+    while (a.toasts.size() > 5) a.toasts.erase(a.toasts.begin());
+}
+
+std::string baseName(const std::string& p) {
+    const size_t s = p.find_last_of("/\\");
+    return s == std::string::npos ? p : p.substr(s + 1);
+}
 
 std::string findMeshDir() {
     const char* candidates[] = {
@@ -109,6 +160,19 @@ int runApp(int argc, char** argv) {
     (void)argc;
     (void)argv;
 
+    // Headless validation hook: CARBALLER_DUMP_MAP=<path> prints a report for
+    // a package and exits, without opening a window or touching GL.
+    if (const char* dumpPath = std::getenv("CARBALLER_DUMP_MAP")) {
+        maploader::MapData data;
+        std::string err;
+        if (!maploader::loadMap(dumpPath, &data, &err)) {
+            std::fprintf(stderr, "Loading %s failed: %s\n", dumpPath, err.c_str());
+            return 1;
+        }
+        std::fputs(maploader::describeMap(data).c_str(), stdout);
+        return 0;
+    }
+
     // SDL_MAIN_HANDLED: we provide main() ourselves, so tell SDL its video
     // subsystem is free to initialize (required on Windows).
     SDL_SetMainReady();
@@ -127,6 +191,9 @@ int runApp(int argc, char** argv) {
     App a;
     a.settings.load("settings.json");
     if (std::getenv("CARBALLER_START_MENU")) a.menuOpen = true;  // test hook
+    if (std::getenv("CARBALLER_START_MAPTAB")) a.settingsUI.selectMapTab = true;
+    if (const char* startMap = std::getenv("CARBALLER_START_MAP"))
+        a.mapTab.loadRequest = startMap;  // picked up on the first frame
 
     if (a.settings.gfx.msaa > 0) {
         SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
@@ -332,13 +399,116 @@ int runApp(int argc, char** argv) {
             a.statsVisible = !a.statsVisible;
 
         if (!a.menuOpen && !selfTest) {
-            if (a.input.pressed(Action::LaunchBall)) a.sim.launchBall(a.settings.freeplay);
+            // Launch Ball / Take Possession are "Previous / Next Session" while
+            // a custom map is loaded, and keep their freeplay meaning on the
+            // default arena - so both contexts stay fully playable. Reset
+            // Shot returns to the last checkpoint reached on a map (see
+            // Sim::resetShot).
+            const bool onMap = a.sim.hasMap();
+            if (a.input.pressed(Action::LaunchBall)) {
+                if (onMap) {
+                    a.sim.cycleSession(-1);
+                    a.camResetPending = true;
+                } else {
+                    a.sim.launchBall(a.settings.freeplay);
+                }
+            }
             if (a.input.pressed(Action::Dribble)) a.sim.startDribble();
-            if (a.input.pressed(Action::TakePossession)) a.sim.takePossession();
+            if (a.input.pressed(Action::TakePossession)) {
+                if (onMap) {
+                    a.sim.cycleSession(1);
+                    a.camResetPending = true;
+                } else {
+                    a.sim.takePossession();
+                }
+            }
             if (a.input.pressed(Action::ResetShot)) {
                 a.sim.resetShot(a.settings.freeplay.resetShotPreset);
                 a.camResetPending = true;
             }
+        }
+
+        // ---------------- custom maps
+        // The Map tab only queues requests; they are resolved here, before
+        // stepping, so a freshly loaded map gets its checkpoint reset applied
+        // in the same frame it lands.
+        if (a.mapTab.unloadRequest) {
+            a.mapTab.unloadRequest = false;
+            a.mapJob.reset();  // nothing applied yet, dropping it is safe
+            if (a.sim.hasMap()) {
+                a.sim.unloadMap();
+                pushToast(a, "Back to the default arena", 2.5);
+            }
+        }
+
+        if (!a.mapTab.loadRequest.empty()) {
+            if (a.mapJob) {
+                pushToast(a, "Already loading " + a.mapTab.loadingName, 2.5);
+                a.mapTab.loadRequest.clear();
+            } else {
+                a.mapJob = std::make_unique<MapJob>();
+                a.mapJob->path = a.mapTab.loadRequest;
+                a.mapJob->name = baseName(a.mapTab.loadRequest);
+                a.mapTab.loadRequest.clear();
+                a.mapTab.loading = true;
+                a.mapTab.loadingName = a.mapJob->name;
+                MapJob* job = a.mapJob.get();
+                // Parsing is pure input -> MapData, so it never touches the
+                // live simulation or GL. Only the finished result is handed
+                // back on the main thread (Leth takes ~1.8s to parse).
+                job->th = std::thread([job] {
+                    job->ok = maploader::loadMap(job->path, &job->data, &job->error);
+                    job->done = true;
+                });
+            }
+        }
+
+        if (a.mapJob && a.mapJob->done.load()) {
+            a.mapJob->th.join();
+            const std::string name = a.mapJob->name;
+            std::string reason;
+            bool applied = false;
+            if (a.mapJob->ok) {
+                applied = a.sim.applyMap(std::move(a.mapJob->data), &reason);
+                if (applied) {
+                    a.mapTab.error.clear();
+                    a.camResetPending = true;
+                    pushToast(a, "Loaded " + name);
+                } else if (reason.empty()) {
+                    reason = "map has no collidable geometry";
+                }
+            } else {
+                reason = a.mapJob->error.empty() ? "could not read package" : a.mapJob->error;
+            }
+            a.mapJob.reset();
+
+            a.mapTab.loading = false;
+            a.mapTab.loadingName.clear();
+            if (!applied) {
+                // A failed load always ends on the default arena.
+                a.sim.unloadMap();
+                a.mapTab.error = "Loading " + name + " failed: " + reason;
+                pushToast(a, "Loading " + name + " failed", 4.0, true);
+            }
+        }
+
+        // checkpoint stepping from the Map tab's Prev / Next buttons
+        if (a.mapTab.cycleRequest != 0 && a.sim.hasMap()) {
+            a.sim.cycleSession(a.mapTab.cycleRequest);
+            a.camResetPending = true;
+        }
+        a.mapTab.cycleRequest = 0;
+
+        // what the Map tab shows
+        a.mapTab.loaded = a.sim.hasMap();
+        a.mapTab.loadedName = a.sim.hasMap() ? a.sim.mapData().fileName : std::string();
+        a.mapTab.sessions = a.sim.sessionCount();
+        a.mapTab.session = a.sim.sessionIndex();
+
+        // keep the renderer's copy of the geometry in step with the sim
+        if (a.sim.hasMap() != a.rendererMapOn) {
+            a.rendererMapOn = a.sim.hasMap();
+            a.renderer.setMap(a.rendererMapOn ? &a.sim.mapData() : nullptr);
         }
 
         // ball cam mode
@@ -565,6 +735,33 @@ int runApp(int argc, char** argv) {
         a.hud.draw(snap, a.cam, a.renderer, a.settings, dw, dh, fpsSmoothed,
                    a.statsVisible, a.menuOpen);
 
+        // ---------------- toasts (top-right, over everything)
+        for (size_t i = 0; i < a.toasts.size();) {
+            if (a.toasts[i].until <= a.nowSec)
+                a.toasts.erase(a.toasts.begin() + (long)i);
+            else
+                i++;
+        }
+        if (!a.toasts.empty()) {
+            ImGui::SetNextWindowPos(ImVec2(float(dw) - 12.0f, 12.0f), ImGuiCond_Always,
+                                    ImVec2(1.0f, 0.0f));
+            ImGui::SetNextWindowBgAlpha(0.88f);
+            const ImGuiWindowFlags flags =
+                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
+                ImGuiWindowFlags_NoFocusOnAppearing;
+            if (ImGui::Begin("##toasts", nullptr, flags)) {
+                for (const Toast& t : a.toasts) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, t.error ? ImVec4(1.0f, 0.42f, 0.40f, 1.0f)
+                                                                 : ImVec4(0.93f, 0.95f, 0.98f, 1.0f));
+                    ImGui::TextUnformatted(t.text.c_str());
+                    ImGui::PopStyleColor();
+                }
+            }
+            ImGui::End();
+        }
+
         if (a.menuOpen) {
             // pause hint
             ImGui::SetNextWindowPos(ImVec2(dw * 0.5f, 24), ImGuiCond_Always, ImVec2(0.5f, 0));
@@ -578,7 +775,7 @@ int runApp(int argc, char** argv) {
             ImGui::End();
 
             bool pOpen = true;
-            if (a.settingsUI.draw(a.settings, a.input, &pOpen)) {
+            if (a.settingsUI.draw(a.settings, a.input, &pOpen, a.mapTab)) {
                 a.needSave = true;
                 a.sim.applyControlSettings(a.settings.ctrl);
                 applyGraphics(a);

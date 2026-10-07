@@ -35,6 +35,11 @@ game.
   left/right stick directions.
 - **Fennec body** — the printable [Thingiverse Fennec][fennec-thing] on the real
   Octane hitbox (procedural fallback included).
+- **Custom maps** — load cooked Unreal Engine 3 maps (`.udk` / `.upk`) from
+  **Settings → Map**: geometry, collision (including car-only and ball-only
+  blockers) and per-checkpoint car + ball spawn points, flat-shaded with no
+  textures. Parsing runs on a worker thread, and a failed load always drops
+  you back on the default arena with an error toast in the top-right.
 - **Lightweight** — flat-shaded OpenGL 3.3, MSAA & particle quality options,
   no game install required.
 
@@ -132,11 +137,17 @@ to keep it out of the source tree.
 Everything — including each stick direction — is rebindable in the in-game
 **Bindings** tab.
 
+With a custom map loaded (**Settings → Map**) the last four actions change
+meaning: **Launch Ball** and **Take Possession** step to the previous / next
+checkpoint (car and ball teleport there), and **Reset Shot** returns to the
+checkpoint you last reached on foot. On the default arena they keep the
+behaviour shown above.
+
 ## Configuration
 
 All options live in the settings menu (`Esc`): camera, controls, freeplay,
-graphics, sound and bindings. Values follow Rocket League's published ranges
-and Psyonix's defaults, and are saved to `settings.json` on exit.
+map, graphics, sound and bindings. Values follow Rocket League's published
+ranges and Psyonix's defaults, and are saved to `settings.json` on exit.
 
 ## Acknowledgments
 

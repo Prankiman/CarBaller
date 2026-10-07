@@ -1,5 +1,7 @@
 #include "sim.h"
 
+#include "../maploader/map_loader.h"
+
 #include "RocketSim/src/RocketSim.h"
 
 #include <algorithm>
@@ -76,6 +78,9 @@ bool Sim::init(const std::string& meshDir) {
     cfg.noBallRot = false;              // keep ball spin (default is true!)
     cfg.useCustomBoostPads = true;      // -> empty list = no boost pads (freeplay)
     cfg.customBoostPads = {};
+    // RocketSim's broadphase is tuned for the soccar arena's AABB sizes and
+    // extent; custom maps are orders of magnitude bigger, so use Bullet's DBVT.
+    cfg.useCustomBroadphase = false;
 
     arena_ = Arena::Create(GameMode::SOCCAR, cfg, 120.0f);
     if (!arena_) {
@@ -106,6 +111,12 @@ bool Sim::init(const std::string& meshDir) {
 }
 
 void Sim::shutdown() {
+    // Map collision owns Bullet objects the arena references: hand them back
+    // (and restore the arena's own collision) before the arena goes away.
+    releaseMapCollision(arena_, mapCol_);
+    mapCol_ = nullptr;
+    mapLoaded_ = false;
+    map_ = maploader::MapData();
     delete arena_;
     arena_ = nullptr;
     car_ = nullptr;
@@ -128,6 +139,9 @@ void Sim::stepOnce() {
         s.boost = 100;
         car_->SetState(s);
     }
+
+    // Custom maps: walking into a checkpoint's spawn point marks it reached.
+    if (mapLoaded_) updateSessionByProximity();
 
     // Jump/flip sound triggers: rising edges of RocketSim's jump state.
     if (onCarJump) {
@@ -296,9 +310,31 @@ float Sim::spawnYawForPreset(int presetIndex) const {
 // every press is the same clean shot (or kickoff) to play.
 void Sim::resetShot(int presetIndex) {
     if (!car_) return;
+
+    // With a custom map loaded the preset is meaningless: Reset Shot returns
+    // to the last checkpoint the car reached, which owns both a car spawn and
+    // (when the map provides one) a ball placement.
+    V3 spawn = spawnPosForPreset(presetIndex);
+    float yaw = spawnYawForPreset(presetIndex);
+    bool ballAtCheckpoint = false;
+    V3 ballSpawn;
+
+    if (mapLoaded_ && !map_.sessions.empty()) {
+        if (session_ < 0 || session_ >= (int)map_.sessions.size()) session_ = 0;
+        const maploader::MapSession& ms = map_.sessions[(size_t)session_];
+        if (ms.hasCar) {
+            spawn = ms.carPos;
+            yaw = ms.carYawRad;
+        }
+        if (ms.hasBall) {
+            ballAtCheckpoint = true;
+            ballSpawn = ms.ballPos;
+        }
+    }
+
     CarState s = car_->GetState();
-    s.pos = toVec(spawnPosForPreset(presetIndex));
-    s.rotMat = Angle(spawnYawForPreset(presetIndex), 0, 0).ToRotMat();
+    s.pos = toVec(spawn);
+    s.rotMat = Angle(yaw, 0, 0).ToRotMat();
     s.vel = Vec(0, 0, 0);
     s.angVel = Vec(0, 0, 0);
     s.flipRelTorque = Vec(0, 0, 0);
@@ -329,8 +365,19 @@ void Sim::resetShot(int presetIndex) {
     car_->controls = CarControls();
 
     if (arena_ && arena_->ball) {
+        // Default arena: the middle at rest. Custom map: the checkpoint's own
+        // ball placement, or - when the map provides none - set down a short
+        // way in front of the car. Directly above the car would spawn the ball
+        // inside the roof and leave it resting on top of the car.
+        Vec ballPos(0, 0, RLConst::BALL_REST_Z);
+        if (mapLoaded_ && !ballAtCheckpoint) {
+            const float cy = std::cos(yaw), sy = std::sin(yaw);
+            ballPos = Vec(spawn.x + 320.0f * cy, spawn.y + 320.0f * sy, spawn.z + ballR_);
+        }
+        if (ballAtCheckpoint) ballPos = toVec(ballSpawn);
+
         BallState bs;
-        bs.pos = Vec(0, 0, RLConst::BALL_REST_Z);
+        bs.pos = ballPos;
         bs.rotMat = RotMat::GetIdentity();
         bs.vel = Vec(0, 0, 0);
         bs.angVel = Vec(0, 0, 0);
@@ -344,6 +391,87 @@ void Sim::resetShot(int presetIndex) {
     prevCar_ = curCar_ = car_->GetState();
     if (arena_ && arena_->ball) prevBall_ = curBall_ = arena_->ball->GetState();
     accum_ = 0;
+}
+
+// --- custom maps ------------------------------------------------------------
+
+// Radius (squared, uu) within which reaching a checkpoint's spawn marks it
+// reached - matched to how far apart the PlayerSpawn/BallSpawn pairs sit.
+static constexpr float kCheckpointReach = 600.0f;
+
+bool Sim::loadMap(const std::string& path, std::string* err) {
+    std::string local;
+    if (!err) err = &local;
+    err->clear();
+
+    maploader::MapData data;
+    std::string perr;
+    if (!::maploader::loadMap(path, &data, &perr)) {
+        // A failed load always ends on the default arena - never leave a
+        // half-loaded map behind.
+        unloadMap();
+        *err = perr.empty() ? "could not read package" : perr;
+        return false;
+    }
+    return applyMap(std::move(data), err);
+}
+
+bool Sim::applyMap(maploader::MapData&& data, std::string* err) {
+    std::string local;
+    if (!err) err = &local;
+    err->clear();
+    if (!arena_) {
+        *err = "simulation not ready";
+        return false;
+    }
+
+    // Put the arena back on its built-in collision first so the swap is
+    // always against a clean baseline, then bring in the map's geometry.
+    unloadMap();
+
+    std::string merr;
+    mapCol_ = applyMapCollision(arena_, data, &merr);
+    if (!mapCol_) {
+        *err = merr.empty() ? "map has no collidable geometry" : merr;
+        return false;
+    }
+
+    map_ = std::move(data);
+    mapLoaded_ = true;
+    session_ = 0;
+    resetShot(0);
+    return true;
+}
+
+void Sim::unloadMap() {
+    releaseMapCollision(arena_, mapCol_);
+    mapCol_ = nullptr;
+    mapLoaded_ = false;
+    session_ = 0;
+    map_ = maploader::MapData();
+    if (car_) resetShot(0);
+}
+
+void Sim::cycleSession(int delta) {
+    if (!mapLoaded_ || map_.sessions.empty() || delta == 0) return;
+    const int n = (int)map_.sessions.size();
+    session_ = (((session_ + delta) % n) + n) % n;
+    resetShot(session_);
+}
+
+void Sim::updateSessionByProximity() {
+    if (map_.sessions.empty()) return;
+    const V3 p(curCar_.pos.x, curCar_.pos.y, curCar_.pos.z);
+    const float reach2 = kCheckpointReach * kCheckpointReach;
+    for (size_t i = 0; i < map_.sessions.size(); i++) {
+        if ((int)i == session_) continue;
+        const V3 d = map_.sessions[i].carPos - p;
+        const float d2 = d.x * d.x + d.y * d.y + d.z * d.z;
+        if (d2 <= reach2) {
+            session_ = (int)i;
+            return;
+        }
+    }
 }
 
 void Sim::launchBall(const FreeplaySettings& fs) {

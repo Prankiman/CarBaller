@@ -38,6 +38,17 @@ const char* actionName(Action a) {
     }
 }
 
+const char* resetShotPresetName(int i) {
+    switch (((i % 6) + 6) % 6) {
+        case 0: return "Blue Corner Kickoff";
+        case 1: return "Orange Corner Kickoff";
+        case 2: return "Midfield (Blue Half)";
+        case 3: return "Midfield (Orange Half)";
+        case 4: return "Aerial Drop";
+        default: return "Blue Goal Line";
+    }
+}
+
 // RL-flavored default bindings (Liquipedia defaults for KBM + Xbox pad).
 Bindings Bindings::defaults() {
     Bindings b;

@@ -22,6 +22,10 @@ enum class Action {
 
 const char* actionName(Action a);
 
+// Display names of the Reset Shot presets ("Blue Corner Kickoff", ...);
+// index is taken modulo the preset count (6).
+const char* resetShotPresetName(int i);
+
 enum class BindType { Key, Mouse, PadBtn, PadAxis };
 
 struct Binding {

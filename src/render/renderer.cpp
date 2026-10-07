@@ -2,6 +2,7 @@
 
 #include "mesh_builder.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -114,6 +115,35 @@ void addEdge(MeshBuilder& mb, const V3& a, const V3& b, float t, const Col& c) {
     mb.quad(a + v * h, b + v * h, b - v * h, a - v * h, c);
 }
 
+// Flat, textureless colour for one custom-map mesh: a muted hue derived from
+// the mesh's object name, so neighbouring pieces of geometry stay tellable
+// apart without turning the map into a rainbow.
+Col mapColorFor(const std::string& name) {
+    uint32_t h = 2166136261u;
+    for (unsigned char c : name) {
+        h ^= c;
+        h *= 16777619u;
+    }
+    const float hue = float(h % 360) / 360.0f;
+    const float sat = 0.30f;
+    const float val = 0.58f + float((h >> 11) % 32) / 32.0f * 0.30f;
+    const float i = std::floor(hue * 6.0f);
+    const float f = hue * 6.0f - i;
+    const float p = val * (1 - sat);
+    const float q = val * (1 - f * sat);
+    const float t = val * (1 - (1 - f) * sat);
+    float r, g, b;
+    switch (int(i) % 6) {
+        case 0: r = val; g = t;   b = p;   break;
+        case 1: r = q;   g = val; b = p;   break;
+        case 2: r = p;   g = val; b = t;   break;
+        case 3: r = p;   g = q;   b = val; break;
+        case 4: r = t;   g = p;   b = val; break;
+        default: r = val; g = p;  b = q;   break;
+    }
+    return Col(r, g, b, 1.0f);
+}
+
 }  // namespace
 
 bool Renderer::init(const std::string& meshDir, const std::string& modelDir) {
@@ -127,6 +157,9 @@ bool Renderer::init(const std::string& meshDir, const std::string& modelDir) {
 
 void Renderer::shutdown() {
     assets_.destroy();
+    for (GpuMesh& m : mapMesh_) m.destroy();
+    mapMesh_.clear();
+    mapInst_.clear();
     particleMesh_.destroy();
     hitboxCar_.destroy();
     hitboxBall_.destroy();
@@ -183,6 +216,148 @@ void Renderer::setHitboxDims(const V3& size, const V3& offset, float ballRadius)
     hitboxBall_.upload(mb.verts, mb.idx);
 }
 
+void Renderer::setMap(const maploader::MapData* data) {
+    for (GpuMesh& m : mapMesh_) m.destroy();
+    mapMesh_.clear();
+    mapInst_.clear();
+    mapFar_ = 0;
+    if (!data || data->placements.empty()) return;
+
+    static_assert(sizeof(Vertex) == sizeof(maploader::MapVertex),
+                  "map vertices must match the renderer's vertex layout");
+
+    // Local AABBs straight from the vertex data (the parser's bounds are only
+    // a hint; culling must never be able to hide geometry on bad input).
+    std::vector<V3> lo(data->shapes.size()), hi(data->shapes.size());
+
+    mapMesh_.reserve(data->shapes.size());
+    for (size_t si = 0; si < data->shapes.size(); si++) {
+        const maploader::MapShape& s = data->shapes[si];
+        const size_t nv = s.verts.size();
+        std::vector<Vertex> v(nv);
+        const Col c = mapColorFor(s.name);
+
+        for (size_t i = 0; i < nv; i++) {
+            v[i].px = s.verts[i].px;
+            v[i].py = s.verts[i].py;
+            v[i].pz = s.verts[i].pz;
+            v[i].nx = 0;
+            v[i].ny = 0;
+            v[i].nz = 1;
+            v[i].u = s.verts[i].u;
+            v[i].v = s.verts[i].v;
+            v[i].r = c.r;
+            v[i].g = c.g;
+            v[i].b = c.b;
+            v[i].a = c.a;
+            if (i == 0) {
+                lo[si] = hi[si] = V3(v[i].px, v[i].py, v[i].pz);
+            } else {
+                lo[si] = V3(std::min(lo[si].x, v[i].px), std::min(lo[si].y, v[i].py),
+                            std::min(lo[si].z, v[i].pz));
+                hi[si] = V3(std::max(hi[si].x, v[i].px), std::max(hi[si].y, v[i].py),
+                            std::max(hi[si].z, v[i].pz));
+            }
+        }
+
+        // Angle-limited per-vertex normals - the same recipe appendCmf() uses
+        // for the arena: merge face normals only within ~50 degrees, so hard
+        // edges stay hard. Face normals follow the mesh's own winding, and the
+        // lit shader flips them for back faces (gl_FrontFacing).
+        std::vector<std::vector<V3>> adj(nv);
+        for (size_t t = 0; t + 2 < s.idx.size(); t += 3) {
+            const uint32_t i0 = s.idx[t], i1 = s.idx[t + 1], i2 = s.idx[t + 2];
+            if (i0 >= nv || i1 >= nv || i2 >= nv) continue;
+            const V3 a(v[i0].px, v[i0].py, v[i0].pz);
+            const V3 b(v[i1].px, v[i1].py, v[i1].pz);
+            const V3 d(v[i2].px, v[i2].py, v[i2].pz);
+            const V3 fn = (b - a).cross(d - a);
+            if (fn.len() < 1e-9f) continue;
+            const V3 un = fn.norm();
+            adj[i0].push_back(un);
+            adj[i1].push_back(un);
+            adj[i2].push_back(un);
+        }
+        for (size_t i = 0; i < nv; i++) {
+            if (adj[i].empty()) continue;
+            const V3 ref = adj[i][0];
+            V3 acc(0, 0, 0);
+            for (const V3& n : adj[i])
+                if (n.dot(ref) > 0.64f) acc += n;
+            V3 out = acc.norm();
+            if (out.len() < 0.5f) out = ref;
+            v[i].nx = out.x;
+            v[i].ny = out.y;
+            v[i].nz = out.z;
+        }
+
+        mapMesh_.push_back(GpuMesh());
+        mapMesh_.back().upload(v, s.idx);
+    }
+
+    mapInst_.reserve(data->placements.size());
+    for (const maploader::MapPlacement& pl : data->placements) {
+        if (!pl.visible || pl.shape < 0 || (size_t)pl.shape >= data->shapes.size()) continue;
+        const V3& a = lo[(size_t)pl.shape];
+        const V3& b = hi[(size_t)pl.shape];
+        V3 mn(1e30f, 1e30f, 1e30f), mx(-1e30f, -1e30f, -1e30f);
+        for (int corner = 0; corner < 8; corner++) {
+            const V3 w = pl.xform.mulPoint(
+                V3((corner & 1) ? b.x : a.x, (corner & 2) ? b.y : a.y, (corner & 4) ? b.z : a.z));
+            mn = V3(std::min(mn.x, w.x), std::min(mn.y, w.y), std::min(mn.z, w.z));
+            mx = V3(std::max(mx.x, w.x), std::max(mx.y, w.y), std::max(mx.z, w.z));
+        }
+        MapInst in;
+        in.xform = pl.xform;
+        in.bmin = mn;
+        in.bmax = mx;
+        in.mesh = (uint32_t)pl.shape;
+        mapInst_.push_back(in);
+    }
+
+    // Widest extent from the origin, so the far plane covers the whole map.
+    float extent = 0;
+    for (const MapInst& in : mapInst_) {
+        extent = std::max({extent, std::fabs(in.bmin.x), std::fabs(in.bmax.x), std::fabs(in.bmin.y),
+                           std::fabs(in.bmax.y), std::fabs(in.bmin.z), std::fabs(in.bmax.z)});
+    }
+    mapFar_ = extent * 1.3f;
+
+    std::fprintf(stderr, "[renderer] map uploaded: %zu meshes, %zu placements\n", mapMesh_.size(),
+                 mapInst_.size());
+}
+
+// The six frustum planes as (a,b,c,d) with a*px+b*py+c*pz+d >= 0 inside the
+// view volume, extracted from proj*view so the test matches the projection
+// exactly (no separate near/far bookkeeping).
+void Renderer::buildFrustum() {
+    const M4 c = proj_ * view_;
+    const float* m = c.m;
+    auto setPlane = [&](int plane, int r0, int s0, int r1, int s1) {
+        for (int col = 0; col < 4; col++)
+            frustum_[plane][col] = s0 * m[col * 4 + r0] + s1 * m[col * 4 + r1];
+    };
+    setPlane(0, 3, 1, 0, 1);   // left   = row3 + row0
+    setPlane(1, 3, 1, 0, -1);  // right  = row3 - row0
+    setPlane(2, 3, 1, 1, 1);   // bottom = row3 + row1
+    setPlane(3, 3, 1, 1, -1);  // top    = row3 - row1
+    setPlane(4, 3, 1, 2, 1);   // near   = row3 + row2
+    setPlane(5, 3, 1, 2, -1);  // far    = row3 - row2
+}
+
+// Conservative AABB test: only the "p-vertex" (the corner furthest along the
+// plane normal) has to be inside for the box to be partly inside.
+bool Renderer::aabbVisible(const V3& mn, const V3& mx) const {
+    for (int i = 0; i < 6; i++) {
+        const float* p = frustum_[i];
+        const float px = p[0] >= 0 ? mx.x : mn.x;
+        const float py = p[1] >= 0 ? mx.y : mn.y;
+        const float pz = p[2] >= 0 ? mx.z : mn.z;
+        if (p[0] * px + p[1] * py + p[2] * pz + p[3] < 0) return false;
+    }
+    return true;
+}
+
 void Renderer::drawLit(const GpuMesh& mesh, const M4& model, int mode, float alpha) {
     if (!mesh.valid()) return;
     lit_.setMat4("uModel", model.m);
@@ -218,7 +393,12 @@ void Renderer::render(const RLCamera& cam, const RenderParams& p, const Particle
     float aspect = h_ > 0 ? float(w_) / float(h_) : 1.0f;
     lastFovX = p.fovX;
     view_ = M4::viewRL(cam.eye, cam.target);
-    proj_ = M4::perspectiveH(p.fovX, aspect, 10.0f, 30000.0f);
+    // Custom maps can extend far past the soccar shell, so stretch the far
+    // plane to their extent (only ever a widening: geometry closer than the
+    // old limit keeps the same depth precision it had).
+    float far = 30000.0f;
+    if (!mapInst_.empty() && mapFar_ > far) far = mapFar_;
+    proj_ = M4::perspectiveH(p.fovX, aspect, 10.0f, far);
 
     lit_.use();
     lit_.setMat4("uView", view_.m);
@@ -228,12 +408,27 @@ void Renderer::render(const RLCamera& cam, const RenderParams& p, const Particle
 
     // ---------- walls/ceiling are always see-through (like Rocket League);
     // only the floor stays fully solid. At opacity 1 the shell is just part
-    // of the opaque pass instead.
-    const bool seeThrough = p.wallOpacity < 0.999f;
+    // of the opaque pass instead. A loaded map replaces all of that.
+    const bool mapOn = !mapInst_.empty();
+    const bool seeThrough = !mapOn && p.wallOpacity < 0.999f;
 
     // ---------- opaque
-    drawLit(assets_.arenaFloor, M4::identity(), 0);   // floor always solid
-    if (!seeThrough) drawLit(assets_.arenaShell, M4::identity(), 0);
+    if (mapOn) {
+        buildFrustum();
+        size_t drawn = 0;
+        for (const MapInst& in : mapInst_) {
+            if (!aabbVisible(in.bmin, in.bmax)) continue;
+            drawLit(mapMesh_[in.mesh], in.xform, 2);  // mode 2 = plain, untextured
+            drawn++;
+        }
+        static const bool dbgDraws = std::getenv("MAPLOADER_VERBOSE") != nullptr;
+        static int dbgFrame = 0;
+        if (dbgDraws && ++dbgFrame % 120 == 1)
+            std::fprintf(stderr, "[renderer] map draws %zu / %zu\n", drawn, mapInst_.size());
+    } else {
+        drawLit(assets_.arenaFloor, M4::identity(), 0);   // floor always solid
+        if (!seeThrough) drawLit(assets_.arenaShell, M4::identity(), 0);
+    }
 
     // ball
     {
@@ -275,7 +470,7 @@ void Renderer::render(const RLCamera& cam, const RenderParams& p, const Particle
     unlit_.setMat4("uProj", proj_.m);
     unlit_.setInt("uTex", 0);
 
-    drawUnlit(assets_.markings, M4::identity(), 1.0f, false);
+    if (!mapOn) drawUnlit(assets_.markings, M4::identity(), 1.0f, false);
 
     if (p.showShadows) {
         float carA = clampf(1.0f - s.carPos.z / 500.0f, 0, 1);
@@ -293,7 +488,10 @@ void Renderer::render(const RLCamera& cam, const RenderParams& p, const Particle
     }
 
     if (p.showBallRing) {
-        M4 m = M4::translate(V3(s.ballPos.x, s.ballPos.y, 4.0f));
+        // The soccar marker sits on the world floor (z=4); on a custom map
+        // the ground is wherever the ball rests, so hang it off the ball.
+        const float ringZ = mapOn ? s.ballPos.z - 91.25f + 2.0f : 4.0f;
+        M4 m = M4::translate(V3(s.ballPos.x, s.ballPos.y, ringZ));
         drawUnlit(assets_.indicator, m, 0.85f, false);
     }
 
