@@ -33,11 +33,24 @@ public:
     V3 eye, target;
 
 private:
-    void computeBallCam(const CameraSettings& cs, const SimSnapshot& s, V3& outEye, V3& outTarget);
+    void computeBallCam(const CameraSettings& cs, const SimSnapshot& s, float dt,
+                        V3& outEye, V3& outTarget);
     void computeCarCam(const CameraSettings& cs, const SimSnapshot& s, float dt, V3& outEye, V3& outTarget);
 
     CamMode desired_ = CamMode::Ball;
     float blend_ = 1.0f;        // 0 = car cam, 1 = ball cam
+
+    // Ball-cam aim: the rig's own yaw/pitch, before the swivel offsets are
+    // added. These are slewed (see kBallAimSlew) instead of read straight
+    // off the snapshot, because the measured car->ball bearing is only well
+    // conditioned while the ball is clear of the car's vertical axis - see
+    // the long note above computeBallCam.
+    float ballYaw_ = 0;         // eased bearing to the ball (rad, unwrapped)
+    float ballPitch_ = 0;       // eased elevation to the ball (rad)
+    float measYaw_ = 0;         // same bearing, unwrapped (never slewed)
+    float prevPhi_ = 0;         // last reliable raw bearing
+    bool hasBallAim_ = false;   // aim state anchored to a snapshot
+    bool hasPrevPhi_ = false;   // prevPhi_ holds a real measurement
 
     float yawOff_ = 0;          // swivel offsets (rad)
     float pitchOff_ = 0;

@@ -15,6 +15,10 @@ void RLCamera::reset(const SimSnapshot& s, const CameraSettings& cs) {
     swivelIdle_ = 0;
     carYaw_ = std::atan2(s.carF.y, s.carF.x);
     lockYaw_ = carYaw_;
+    // Ball-cam aim re-anchors on the snapshot below instead of easing over
+    // from wherever it was: a preset move is a reposition, not a swing.
+    hasBallAim_ = false;
+    hasPrevPhi_ = false;
     airTime_ = 0;
     locked_ = false;
     blend_ = (desired_ == CamMode::Ball) ? 1.0f : 0.0f;  // snap, no animation
@@ -23,7 +27,7 @@ void RLCamera::reset(const SimSnapshot& s, const CameraSettings& cs) {
 
     V3 e, t;
     if (blend_ > 0.5f)
-        computeBallCam(cs, s, e, t);
+        computeBallCam(cs, s, 0.0f, e, t);
     else
         computeCarCam(cs, s, 0.0f, e, t);
     smoothedEye_ = e;
@@ -37,23 +41,98 @@ void RLCamera::reset(const SimSnapshot& s, const CameraSettings& cs) {
     target = t;
 }
 
-void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
-                              V3& outEye, V3& outTarget) {
-    V3 toBall = s.ballPos - s.carPos;
-    float baseYaw;
-    if (toBall.len2d() > 1.0f)
-        baseYaw = std::atan2(toBall.y, toBall.x);
-    else
-        baseYaw = std::atan2(s.carF.y, s.carF.x);
+// Floor (uu) on the horizontal car->ball offset for the bearing to be worth
+// reading: below this the ball sits on the car's vertical axis and atan2
+// returns direction noise, so the aim is held instead.
+static constexpr float kBallAimEps = 5.0f;
 
-    float lookYaw = baseYaw + yawOff_;
+// Max rate (rad/s) the ball-cam rig may change its own aim.
+//
+// The rig used to read the aim straight off the snapshot, and the measured
+// car->ball bearing is only well conditioned while the ball is clear of the
+// car's vertical axis. As the ball passes directly over (or under) the car -
+// a drop on the roof, a ball crossing overhead - the horizontal offset runs
+// through zero and atan2 flips in a single frame, with the same result on
+// either side of the crossing: the eye teleported to the far side of the car
+// and the view spun around in ONE frame. The eye follower folds
+// frame-to-frame rig speed into its follow rate, so a jump like that lands
+// its per-frame factor at ~1: the camera snapped to the new pose instead of
+// easing into it.
+//
+// Measured by driving the update loop through the degenerate cases
+// (tools/probe_camera.cpp): an overhead crossing moved the eye 516 uu and
+// turned the view 75 deg in one frame, a ball landing on the roof 225 uu /
+// 50 deg, a ball drifting around overhead (bearing pure noise) 534 uu /
+// 95 deg - all one-frame jumps.
+//
+// 20 rad/s is just under the fastest sweep real play can ask for (a 4000
+// uu/s ball passing at grazing range, ~150 uu off the car's axis, sweeps
+// ~27 rad/s), so tracking stays within ~1 deg of the unlimited case
+// everywhere except the degenerate ones - which now swing around the car
+// over ~0.15 s instead of jumping. Note this is deliberately above the car
+// cam's nose-follow rate: the nose is never degenerate, the ball bearing is.
+static constexpr float kBallAimSlew = 20.0f;
+
+void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
+                              float dt, V3& outEye, V3& outTarget) {
+    const V3 toBall = s.ballPos - s.carPos;
+    const bool reliable = toBall.len2d() > kBallAimEps;
+    const bool first = !hasBallAim_;
+    const float slewStep = kBallAimSlew * dt;
+
+    // ---- horizontal aim: keep the bearing on one continuous branch.
+    // measYaw_ unwraps the raw bearing frame to frame (always the short way,
+    // so a far-side teleport still approaches the short way round), while
+    // ballYaw_ chases it at the slew rate. Tracking the unwrapped
+    // measurement - rather than the error against ballYaw_ directly - is what
+    // keeps the branch choice correct through the overhead crossing, where
+    // the shortest path from the current aim would send the rig the wrong
+    // way around the car.
+    if (reliable) {
+        const float phi = std::atan2(toBall.y, toBall.x);
+        if (first) {
+            ballYaw_ = measYaw_ = phi;  // reset/preset: anchor, don't ease in
+            hasBallAim_ = true;
+        } else {
+            measYaw_ = hasPrevPhi_ ? measYaw_ + wrapAngle(phi - prevPhi_) : phi;
+            ballYaw_ += clampf(measYaw_ - ballYaw_, -slewStep, slewStep);
+        }
+        prevPhi_ = phi;
+        hasPrevPhi_ = true;
+    } else if (first) {
+        // Reset with the ball dead on the car's vertical axis: there is no
+        // bearing to anchor to, so take the car's heading and wait for the
+        // first real measurement.
+        ballYaw_ = measYaw_ = std::atan2(s.carF.y, s.carF.x);
+        hasBallAim_ = true;
+    }
+    // (otherwise: ball on the vertical axis - hold, the bearing is noise.)
+
+    // Keep both angles inside (-pi,pi] by the same amount so their
+    // difference - the part the slew actually clamps - stays exact.
+    if (ballYaw_ > (float)M_PI) {
+        ballYaw_ -= 2 * (float)M_PI;
+        measYaw_ -= 2 * (float)M_PI;
+    } else if (ballYaw_ < -(float)M_PI) {
+        ballYaw_ += 2 * (float)M_PI;
+        measYaw_ += 2 * (float)M_PI;
+    }
+
+    float lookYaw = ballYaw_ + yawOff_;
     V3 fwd(std::cos(lookYaw), std::sin(lookYaw), 0);
 
     outEye = s.carPos - fwd * cs.distance + V3(0, 0, cs.height);
 
+    // ---- vertical aim: same treatment, minus the branch (the elevation of
+    // a point above the horizon plane is single-valued). What this buys is
+    // the ball teleport - dribble puts the ball on the roof, possession drops
+    // it ahead - which used to kick the view up/down in one frame.
     V3 toT = s.ballPos - outEye;
-    float basePitch = std::atan2(toT.z, std::max(toT.len2d(), 1.0f));
-    float pitch = clampf(basePitch + cs.angle * (float)M_PI / 180.0f + pitchOff_,
+    const float measPitch = std::atan2(toT.z, std::max(toT.len2d(), 1.0f));
+    if (first) ballPitch_ = measPitch;
+    else ballPitch_ += clampf(measPitch - ballPitch_, -slewStep, slewStep);
+
+    float pitch = clampf(ballPitch_ + cs.angle * (float)M_PI / 180.0f + pitchOff_,
                          -1.4f, 1.4f);
 
     V3 dir = dirFromYawPitch(lookYaw, pitch);
@@ -85,6 +164,10 @@ static_assert(kAirDelay + kAirFollowTime <= 2.0f + 1e-5f,
 // the time-left gain below, so the hand-off into the lock carries no
 // velocity at all - the heading has already arrived on the axis it locks.
 static constexpr float kYawFollowRate = 12.0f;
+// The ball cam gets its own, higher cap (kBallAimSlew, defined above
+// computeBallCam): the nose heading can spin but never jumps, while the
+// car->ball bearing is undefined over the car's vertical axis, so ball cam
+// has to be able to swing harder to recover from a degenerate frame.
 
 // Air-follow gain expressed per second of window left: as the window
 // closes, rate = kLockGain / secondsLeft takes over from kYawFollowRate and
@@ -213,7 +296,7 @@ void RLCamera::update(float dt, const CameraSettings& cs, const SimSnapshot& s,
 
     // ---- compute both rigs
     V3 ballEye, ballTarget, carEye, carTarget;
-    computeBallCam(cs, s, ballEye, ballTarget);
+    computeBallCam(cs, s, dt, ballEye, ballTarget);
     computeCarCam(cs, s, dt, carEye, carTarget);
 
     V3 wantEye = V3::lerp(carEye, ballEye, blend_);
