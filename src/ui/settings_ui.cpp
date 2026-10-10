@@ -140,18 +140,33 @@ void drawControlsTab(ControlSettings& c, bool& changed) {
 
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Deadzone Shape");
-    ImGui::SameLine();
-    if (ImGui::RadioButton("Cross", c.deadzoneShape == 0)) {
-        c.deadzoneShape = 0;
-        changed = true;
-    }
-    ImGui::SameLine();
-    if (ImGui::RadioButton("Circle", c.deadzoneShape == 1)) {
-        c.deadzoneShape = 1;
-        changed = true;
-    }
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Cross: square deadzone (axis-by-axis). Circle: radial deadzone.");
+        ImGui::SetTooltip(
+            "Rocket League's Deadzone Shape: how far the stick must move, and how "
+            "the deflection is rescaled past it. RL's default is Cross.\n\n"
+            "Cross - each axis is deadzoned separately: a component inside the "
+            "deadzone drops out while the other one passes through, and diagonals "
+            "come out strong.\n"
+            "Square - the same box-shaped deadzone, but the whole stick vector is "
+            "scaled by one factor, so your direction through the deadzone is kept "
+            "exactly.\n"
+            "Circle - a radial deadzone: direction kept and output capped, so "
+            "diagonals never outrun straight pushes.");
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Cross", c.deadzoneShape == DeadzoneCross)) {
+        c.deadzoneShape = DeadzoneCross;
+        changed = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Square", c.deadzoneShape == DeadzoneSquare)) {
+        c.deadzoneShape = DeadzoneSquare;
+        changed = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Circle", c.deadzoneShape == DeadzoneCircle)) {
+        c.deadzoneShape = DeadzoneCircle;
+        changed = true;
+    }
 
     check("Controller Vibration", &c.vibration, changed,
           "Rumble on boost activation, ball impacts and hard landings (requires a "

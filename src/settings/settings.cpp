@@ -254,7 +254,8 @@ bool Settings::load(const std::string& path) {
     ctrl.deadzone = clampf(ctrl.deadzone, 0.0f, 0.75f);
     ctrl.dodgeDeadzone = clampf(ctrl.dodgeDeadzone, 0.10f, 1.0f);
     ctrl.keyboardSteerSmooth = clampf(ctrl.keyboardSteerSmooth, 0.0f, 0.25f);
-    if (ctrl.deadzoneShape != 0 && ctrl.deadzoneShape != 1) ctrl.deadzoneShape = 0;
+    if (ctrl.deadzoneShape < DeadzoneCross || ctrl.deadzoneShape > DeadzoneSquare)
+        ctrl.deadzoneShape = DeadzoneCross;
     freeplay.launchSpeed = clampf(freeplay.launchSpeed, 1000.0f, 5000.0f);
     freeplay.launchAngle = clampf(freeplay.launchAngle, -90.0f, 90.0f);
     freeplay.gameSpeed = clampf(freeplay.gameSpeed, 0.0f, 150.0f);

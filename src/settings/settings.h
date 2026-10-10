@@ -73,12 +73,22 @@ struct CameraSettings {
     float mouseSens = 10.0f;       // 1..100 (RL); 10 = our 0.016 rad/px scale
 };
 
+// Rocket League's "Deadzone Shape": how far the stick has to move before it
+// counts, and how the deflection is rescaled once it does. Cross is RL's
+// default (ours too). Numbering is fixed by saved configs: 1 has meant
+// circle since the option first shipped, so square takes 2.
+enum DeadzoneShape {
+    DeadzoneCross = 0,    // per-axis: each axis is deadzoned on its own
+    DeadzoneCircle = 1,   // radial: dead circle, direction kept, |out| <= 1
+    DeadzoneSquare = 2,   // box deadzone, one uniform scale: direction kept
+};
+
 struct ControlSettings {
     float steerSens = 1.0f;        // 1..10 (RL; default 1.00)
     float aerialSens = 1.0f;       // 1..10 (RL; default 1.00)
     float deadzone = 0.20f;        // 0..0.75 (RL; 0.20 = v1.74 default)
     float dodgeDeadzone = 0.80f;   // 0.10..1.00 (RL; 0.80 = v1.74 default)
-    int deadzoneShape = 0;         // 0 = cross, 1 = circle
+    int deadzoneShape = DeadzoneCross;
     bool vibration = true;         // RL ships with controller vibration ON
     float keyboardSteerSmooth = 0.0f; // 0 = instant digital (RL-like)
 };
