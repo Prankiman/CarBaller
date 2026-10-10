@@ -14,13 +14,12 @@ void RLCamera::reset(const SimSnapshot& s, const CameraSettings& cs) {
     yawOff_ = pitchOff_ = 0;
     swivelIdle_ = 0;
     carYaw_ = std::atan2(s.carF.y, s.carF.x);
-    lockYaw_ = carYaw_;
+    axisYaw_ = carYaw_;       // facing axis starts on the nose bearing
+    hasAxisYaw_ = true;
     // Ball-cam aim re-anchors on the snapshot below instead of easing over
     // from wherever it was: a preset move is a reposition, not a swing.
     hasBallAim_ = false;
     hasPrevPhi_ = false;
-    airTime_ = 0;
-    locked_ = false;
     blend_ = (desired_ == CamMode::Ball) ? 1.0f : 0.0f;  // snap, no animation
     hasSmoothed_ = false;
     shakeAmp_ = 0;
@@ -186,44 +185,92 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
     outTarget = outEye + dir * std::max(toT.len(), 1000.0f);
 }
 
-// After leaving a surface the camera first HOLDS the takeoff heading for
-// kAirDelay - no nose-following at all yet, so a jump or flip straight off
-// the ground cannot swing it. This is the undecided phase: the camera
-// keeps the world heading it left the surface with while the car may
-// already be rotating, so its back/front position relative to the car is
-// deliberately still open. It then follows the nose for kAirFollowTime
-// (the player's initial pitch/steer still moves the camera point), and the
-// rear/front axis at the end of that window is locked in for the rest of
-// the flight: 1.4s hold + 0.6s live follow = 2.0s total, with all of the
-// extra length in the hold so it reads as a longer initial wait rather than
-// a slower settle - the pre-change config reached 1.5s the other way round
-// (1.0s hold + 0.5s follow, and no closing gain, so it eased onto the axis
-// for a while after the window had already closed).
-static constexpr float kAirDelay = 1.4f;
-static constexpr float kAirFollowTime = 0.6f;
-// 1e-5 of slop: 1.4f + 0.6f rounds a hair off 2.0f in binary.
-static_assert(kAirDelay + kAirFollowTime <= 2.0f + 1e-5f,
-              "air heading must be decided within 2.0s of takeoff");
+// ---------------------------------------------------------------- air heading
+//
+// Rocket League's car cam does not "pick a side of the car at takeoff and
+// lock it": it sits behind the direction the car is TRAVELLING. On the
+// ground those two are the same thing (you drive where you point, and
+// reversing does not swing the camera around - which is why the ground case
+// below still follows the facing rigidly). In the air they come apart, and
+// the camera follows the momentum: a flip eases it behind the new velocity,
+// pitching or air-rolling moves it not at all, and it settles over time
+// rather than deciding once.
+//
+// Evidence, since RL ships no document for this:
+//  - Dignitas, "Understanding the Cameras": "The car camera is pointed in
+//    your car's direction of travel, and will rigidly stay straight as long
+//    as your car is on the ground."
+//  - r/RocketLeague on the setting: "the camera angle will always change
+//    depending on where the ball is (for ballcam) or on the car momentum".
+//  - In-game Stiffness tooltip, "controls how rigidly your camera follows
+//    your car", plus community measurements of it as car-cam inertia
+//    ("a certain amount of inertia ... this effect only occurs in car cam"),
+//    which is the knob that owns the ease below.
+//
+// So the air target is the horizontal velocity heading, blended with the
+// (pitch-immune) nose heading as the speed runs out: at a stall or a
+// straight-up hover there is no horizontal direction to sit behind, so the
+// facing takes over instead of the bearing collapsing onto noise.
 
-// Per-second rate the car-cam heading chases its target (nose while
-// tracking, lockYaw_ once locked). Grounded tracking and the air follow
-// both start here; inside the air follow window the rate additionally gets
-// the time-left gain below, so the hand-off into the lock carries no
-// velocity at all - the heading has already arrived on the axis it locks.
+// uu/s: below this the horizontal velocity is not a direction (stall,
+// vertical hover, the first frames of a jump) and the nose heading carries
+// the target on its own.
+static constexpr float kVelDirMin = 200.0f;
+// uu/s: at and above this the camera is fully on the velocity heading. A
+// cruising aerial sits at 800-2300 uu/s, so real flight always lands here;
+// only the blended middle band (a hop, a landing bounce, a slow fly-in)
+// mixes the two.
+static constexpr float kVelDirMax = 900.0f;
+
+// Per-second rate the car-cam heading chases its target ON THE GROUND:
+// rigid, matching RL's "will rigidly stay straight as long as your car is
+// on a surface". The air uses the stiffness ease below instead.
 static constexpr float kYawFollowRate = 12.0f;
 // The ball cam gets its own, higher cap (kBallAimSlew, defined above
 // computeBallCam): the nose heading can spin but never jumps, while the
 // car->ball bearing is undefined over the car's vertical axis, so ball cam
 // has to be able to swing harder to recover from a degenerate frame.
 
-// Air-follow gain expressed per second of window left: as the window
-// closes, rate = kLockGain / secondsLeft takes over from kYawFollowRate and
-// the tracking error decays like ((left / window)^kLockGain) - it reaches
-// zero, smoothly and with zero velocity, at the instant the axis is locked.
-// So the lock is a STOP, not a swing: after the window the camera's back/
-// front position relative to the car is final, and the post-lock easing has
-// (at most) a one-frame nose flip-flop left to absorb.
-static constexpr float kLockGain = 2.5f;
+// Air ease: a first-order (exponential) approach onto the target heading,
+// per second, with Stiffness doing exactly what RL's Stiffness does - it is
+// the only one of RL's camera settings that governs how tightly the camera
+// tracks the car, and the measured behaviour of it is inertia in car cam
+// (low stiffness floats behind you, high stiffness snaps onto you). At the
+// default stiffness 0.5 this is 6/s: 63% of the way to a new heading in
+// 0.17s, 95% in 0.5s - the camera trails the momentum into place, with no
+// window and no lock, so it can be re-aimed by the very next change in
+// velocity instead of waiting out a decision.
+static constexpr float kAirEaseBase = 2.5f;   // 1/s at stiffness 0
+static constexpr float kAirEaseStiff = 7.0f;  // 1/s per unit of stiffness
+
+// The rear/front axis the camera sits on when it is following the car's
+// FACING (ground, and the air's low-speed fallback), expressed as a world
+// heading, kept PITCH-IMMUNE. It is the horizontal projection of the nose -
+// and the rear's projection is the same line 180 deg round, so tracking nose
+// or rear is literally the same axis and it does not matter which end is
+// named.
+//
+// The projection is independent of pitch almost everywhere: pitch the car
+// from level to 80 deg and the bearing does not move at all. The one place
+// it breaks is EXACTLY vertical: once pitch passes 90 deg, cos(pitch)
+// changes sign and atan2 reports the same line flipped by 180 deg, with no
+// way to tell the two apart from the frame alone. Following that jump orbits
+// the camera around the car on a pure pitch input - measured
+// (tools/probe_camera.cpp, "air camera" section): a 0->120 deg pitch swung
+// the camera 180 deg around the car at 75 uu/frame, while any pitch inside
+// +-90 deg moved it 0. That is pitch driving the camera position, which
+// Rocket League does not do.
+//
+// Both branches are the same line, so each frame simply keeps whichever end
+// is continuous with the last one. A real yaw turn moves the bearing by
+// ~5 deg per frame even at full air steer (120 Hz), while the pitch flip is
+// a single-frame 180 deg jump - so nearest-branch follows steering and drops
+// the flip. The result: pitching through vertical, or all the way around,
+// leaves the camera exactly where it was.
+static constexpr float kAxisHalfTurn = 0.5f * (float)M_PI;
+// Nose within ~81 deg of straight up/down: its horizontal projection is too
+// short to be a direction, so the axis is held at its last good value.
+static constexpr float kAxisMinFxy = 0.15f;
 
 // Cap (uu) on how far the smoothed eye trails the ideal rig while the RIG
 // itself is moving - horizontally (swivel, car turns, boost) and vertically
@@ -234,68 +281,78 @@ static constexpr float kRigLagCap = 40.0f;
 
 void RLCamera::computeCarCam(const CameraSettings& cs, const SimSnapshot& s,
                              float dt, V3& outEye, V3& outTarget) {
-    // Grounded = the camera sits behind the rear, following the nose
-    // heading. Airborne = the heading is held for kAirDelay, then the
-    // follow stays live for kAirFollowTime (converging onto the nose axis as
-    // the window closes), then the rear/front axis of that moment is latched
-    // as the lock target: pitch, roll and yaw afterwards only translate the
-    // camera with the car - they never swing it around - until the car
-    // grounds again and tracking resumes. The whole decision takes
-    // kAirDelay + kAirFollowTime = 2.0s from takeoff, so by 2.0s the
-    // back/front position is fixed for the rest of the flight.
-    // The eye itself (behind the rear, and around the car under the pitch
-    // swivel) is placed by placeEye below.
+    // Grounded = rigidly behind the car's facing (RL keeps the camera
+    // straight as long as the car is on a surface; reversing never swings
+    // it). Airborne = eased onto the direction of travel, continuously - no
+    // takeoff hold, no decision window, no lock: the momentum is re-read
+    // every frame, so a flip re-aims the camera and a pitch or air roll
+    // leaves it alone. The eye itself (behind the rear, and around the car
+    // under the pitch swivel) is placed by placeEye below.
     const float fxy = std::sqrt(s.carF.x * s.carF.x + s.carF.y * s.carF.y);
 
-    bool track;
-    if (s.onGround) {
-        airTime_ = 0;
-        locked_ = false;
-        track = true;
-    } else if (locked_) {
-        track = false;
-    } else {
-        airTime_ += dt;
-        if (airTime_ < kAirDelay) {
-            // Takeoff delay: frozen on the heading the car left the ground
-            // with - the nose cannot move the camera yet.
-            track = false;
-        } else if (airTime_ >= kAirDelay + kAirFollowTime) {
-            // Window over: latch the camera heading from the rear/front
-            // axis of this moment (the tracked heading is kept when the nose
-            // points straight up/down, where the horizontal projection is no
-            // direction). Setting the target - rather than carYaw_ itself -
-            // is what keeps the end of the follow window continuous; with
-            // the time-left gain below carYaw_ is already sitting on that
-            // axis, so nothing visibly moves here.
-            lockYaw_ = (fxy > 0.15f) ? std::atan2(s.carF.y, s.carF.x) : carYaw_;
-            locked_ = true;
-            track = false;
+    // ---- pitch-immune facing axis (see the long note above): the nose
+    // bearing, kept continuous frame to frame so a pitch past vertical -
+    // which flips the bearing by 180 deg without the car turning at all -
+    // cannot drag the camera around the car. Held, not snapped, while the
+    // nose is too close to straight up/down for its projection to be a
+    // direction (that last-good axis is already what the camera shows, so
+    // holding it is also continuous).
+    //
+    // On the GROUND the branch rule is skipped: the raw bearing is taken
+    // as the axis, every frame. Wheels define the attitude there, so the
+    // projection cannot be flipped by pitch, and reading it fresh keeps
+    // the ground camera self-correcting - which also heals the axis for
+    // the next takeoff. The branch rule is one-way: continuity can pin it
+    // to the wrong side (an airborne near-vertical manoeuvre moves the
+    // real heading by >90 deg while the nose is too vertical to read, and
+    // it locks onto bearing + 180), and nothing in the air can tell "held
+    // past vertical" from "corrupted" - both present as the same
+    // persistent 180 deg disagreement. Before this split, a landing eased
+    // the camera onto that corrupted axis and it sat in FRONT of the car
+    // permanently - measured at 180.0 deg off after level flight -> nose
+    // to 88 deg -> yaw 120 -> land (regression case "land after vertical"
+    // in tools/probe_camera.cpp).
+    if (fxy > kAxisMinFxy) {
+        const float bearing = std::atan2(s.carF.y, s.carF.x);
+        if (s.onGround || !hasAxisYaw_) {
+            axisYaw_ = bearing;
+            hasAxisYaw_ = true;
         } else {
-            track = true;
+            const float d = wrapAngle(bearing - axisYaw_);
+            axisYaw_ = (std::fabs(d) <= kAxisHalfTurn)
+                           ? bearing
+                           : wrapAngle(bearing + (float)M_PI);
         }
     }
 
-    // Nose projected on the ground plane: well-defined on floor, ceiling
-    // and walls, degenerate only while the nose points straight up or down,
-    // where the heading is simply held instead of snapping on noise. Once
-    // locked, the same easing runs against the latched lockYaw_ so the
-    // heading glides onto the locked axis (and stops) instead of jumping.
-    const bool haveTarget = locked_ || (track && fxy > 0.15f);
-    if (haveTarget) {
-        const float targetYaw = locked_ ? lockYaw_ : std::atan2(s.carF.y, s.carF.x);
-        const float delta = wrapAngle(targetYaw - carYaw_);
-        float rate = kYawFollowRate;
-        if (!locked_ && !s.onGround) {
-            // Closing gain: the chase starts at the plain follow rate and
-            // only picks up as the seconds left in the window run out, so
-            // the heading lands on the nose axis - with no lag left - at the
-            // exact frame the axis is latched.
-            const float left = std::max(kAirDelay + kAirFollowTime - airTime_, 1e-3f);
-            rate = std::max(rate, kLockGain / left);
+    // ---- pick what the camera sits behind this frame: the facing on the
+    // ground, the direction of travel in the air (facing as the speed runs
+    // out). Blended on the unit circle so a heading that has wrapped
+    // through +-180 deg interpolates the short way round.
+    float targetYaw = axisYaw_;
+    if (!s.onGround) {
+        const float speed2d = std::hypot(s.carVel.x, s.carVel.y);
+        float w = clampf((speed2d - kVelDirMin) / (kVelDirMax - kVelDirMin),
+                         0.0f, 1.0f);
+        w = w * w * (3.0f - 2.0f * w);   // ease the handover, no kink
+        if (w > 0.0f) {
+            const float velYaw = std::atan2(s.carVel.y, s.carVel.x);
+            const float x = std::cos(axisYaw_) +
+                            w * (std::cos(velYaw) - std::cos(axisYaw_));
+            const float y = std::sin(axisYaw_) +
+                            w * (std::sin(velYaw) - std::sin(axisYaw_));
+            if (x * x + y * y > 1e-6f) targetYaw = std::atan2(y, x);
         }
-        carYaw_ += delta * std::min(rate * dt, 1.0f);
     }
+
+    // ---- ease onto it: rigid on the ground, stiffness-scaled inertia in
+    // the air (kAirEase* above). Exponential, so the per-frame step shrinks
+    // with the error - the heading arrives without a visible stop.
+    const float rate = s.onGround
+                           ? kYawFollowRate
+                           : kAirEaseBase + kAirEaseStiff * cs.stiffness;
+    const float delta = wrapAngle(targetYaw - carYaw_);
+    carYaw_ += delta * (1.0f - std::exp(-rate * dt));
 
     float lookYaw = carYaw_ + yawOff_;
     float tilt;      // pitch swivel the orbit could not absorb (see placeEye)
