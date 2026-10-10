@@ -40,8 +40,10 @@ game.
   (including car-only and ball-only blockers) and per-checkpoint car + ball
   spawn points, flat-shaded with no textures. Driving into a checkpoint's spawn
   marks it reached (a toast announces it) and Reset Shot sends car and ball
-  back there. Parsing runs on a worker thread, and a failed load always drops
-  you back on the default arena with an error toast in the top-right.
+  back there. Maps that ship no numbered spawn series of their own get their
+  checkpoints from the level's navigation points, so every map has some.
+  Parsing runs on a worker thread, and a failed load always drops you back on
+  the default arena with an error toast in the top-right.
 - **Lightweight** — flat-shaded OpenGL 3.3, MSAA & particle quality options,
   no game install required.
 

@@ -72,6 +72,7 @@ struct MapStats {
     int32_t bspTris = 0;         // triangles taken from the level's BSP model
     int32_t uniqueTris = 0;
     int32_t sessions = 0;
+    int32_t derivedSessions = 0;  // checkpoints built from the map's PathNodes
     int32_t spawnActors = 0;
     int32_t ballSpawns = 0;
     int32_t chan[4] = {0, 0, 0, 0};  // indexed by CollChannel

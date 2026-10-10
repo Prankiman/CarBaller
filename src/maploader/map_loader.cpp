@@ -417,6 +417,7 @@ bool loadMap(const std::string& path, MapData* out, std::string* err) {
     std::map<int32_t, Pending> carSpawns;
     std::map<int32_t, Pending> ballSpawns;
     std::vector<Pending> playerStarts;
+    std::vector<Pending> pathNodes;
 
     for (int32_t i = 0; i < n; i++) {
         const ue3::ActorRec& a = actors[(size_t)i];
@@ -442,6 +443,10 @@ bool loadMap(const std::string& path, MapData* out, std::string* err) {
         if (!classify(a.tag) && !classify(a.name)) {
             if (a.className == "PlayerStart_TA" || a.className == "PlayerStart")
                 playerStarts.push_back({-1, a.loc, a.yaw});
+            // Any PathNode flavour (PathNode, PathNode_TA, RoadPathNode, ...):
+            // they are the mapper's own navigation waypoints.
+            else if (toLower(a.className).find("pathnode") != std::string::npos)
+                pathNodes.push_back({-1, a.loc, a.yaw});
             continue;
         }
         if (num < 0) continue;
@@ -483,6 +488,53 @@ bool loadMap(const std::string& path, MapData* out, std::string* err) {
             s.hasBall = true;
         }
         out->sessions.push_back(s);
+    }
+
+    // ---- derived checkpoints -------------------------------------------
+    // Only Dribble-style maps ship a numbered spawn series (PlayerSpawn01..);
+    // a map with a lone PlayerStart would otherwise have nothing to step
+    // through. UE3 PathNodes are the mapper's own navigation points along the
+    // intended route, so on those maps they become checkpoints: drive within
+    // range of one and it marks itself reached like any other. Ordered by
+    // nearest-neighbour from the map's own start so prev/next walks a sane
+    // route instead of package order.
+    if (out->sessions.size() < 2 && !pathNodes.empty()) {
+        const V3 start =
+            out->sessions.empty() ? pathNodes.front().pos : out->sessions.front().carPos;
+        std::vector<Pending> route;
+        std::vector<Pending> rest = pathNodes;
+        V3 cur = start;
+        while (!rest.empty()) {
+            size_t best = 0;
+            float bestD = 3.4e38f;
+            for (size_t i = 0; i < rest.size(); i++) {
+                const V3 d = rest[i].pos - cur;
+                const float d2 = d.x * d.x + d.y * d.y + d.z * d.z;
+                if (d2 < bestD) {
+                    bestD = d2;
+                    best = i;
+                }
+            }
+            route.push_back(rest[best]);
+            cur = rest[best].pos;
+            rest.erase(rest.begin() + (long)best);
+        }
+        for (size_t i = 0; i < route.size(); i++) {
+            MapSession s;
+            char buf[16];
+            std::snprintf(buf, sizeof buf, "Nav%02d", (int)i + 1);
+            s.name = buf;
+            s.carPos = route[i].pos;
+            s.hasCar = true;
+            // Face the next checkpoint along the route; the last looks back at
+            // the one it came from rather than into whatever is ahead of it.
+            const V3 to = (i + 1 < route.size())
+                              ? route[i + 1].pos - route[i].pos
+                              : (i > 0 ? route[i - 1].pos - route[i].pos : V3(0.f, 1.f, 0.f));
+            s.carYawRad = std::atan2(to.y, to.x);
+            out->sessions.push_back(s);
+        }
+        out->stats.derivedSessions = (int32_t)route.size();
     }
 
     // ---- stats ----------------------------------------------------------
@@ -551,7 +603,12 @@ std::string describeMap(const MapData& m) {
         s += "bounds          : (none)\n";
     s += fmtStr("spawn actors    : %d car, %d ball\n", m.stats.spawnActors,
                 m.stats.ballSpawns);
-    s += fmtStr("sessions        : %d\n", m.stats.sessions);
+    s += fmtStr("sessions        : %d%s\n", m.stats.sessions,
+                m.stats.derivedSessions
+                    ? fmtStr(" (%d derived from the map's navigation points)",
+                             m.stats.derivedSessions)
+                        .c_str()
+                    : "");
     for (const MapSession& ses : m.sessions) {
         s += fmtStr("  [%s] car=(%.0f, %.0f, %.0f) yaw=%.1fdeg", ses.name.c_str(),
                     ses.carPos.x, ses.carPos.y, ses.carPos.z,

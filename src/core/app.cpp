@@ -522,6 +522,8 @@ int runApp(int argc, char** argv) {
         a.mapTab.loadedName = a.sim.hasMap() ? a.sim.mapData().fileName : std::string();
         a.mapTab.sessions = a.sim.sessionCount();
         a.mapTab.session = a.sim.sessionIndex();
+        a.mapTab.derivedSessions =
+            a.sim.hasMap() ? a.sim.mapData().stats.derivedSessions : 0;
 
         // Keep the renderer's copy of the geometry in step with the sim. Keyed
         // on the map generation, not on hasMap(): loading map B over map A

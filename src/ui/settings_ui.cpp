@@ -515,6 +515,9 @@ void SettingsUI::drawMapTab(MapTabState& map, bool& changed) {
         ImGui::SameLine();
         if (ImGui::SmallButton("Next >")) map.cycleRequest += 1;
         ImGui::TextDisabled("Launch Ball / Take Possession step through these too");
+        if (map.derivedSessions > 0)
+            ImGui::TextDisabled("%d of these come from the map's navigation points",
+                                map.derivedSessions);
     } else if (map.loaded) {
         ImGui::TextDisabled("This map has no checkpoints; Reset Shot returns to the start.");
     }

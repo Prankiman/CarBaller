@@ -21,6 +21,7 @@ struct MapTabState {
     std::string loadedName;      // file name only, for the status line
     int sessions = 0;
     int session = 0;
+    int derivedSessions = 0;     // checkpoints built from the map's PathNodes
     std::string error;           // most recent load failure
 };
 
