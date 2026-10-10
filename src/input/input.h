@@ -11,6 +11,14 @@
 
 namespace RocketSim { struct CarControls; }  // RocketSim
 
+// Rocket League's "Deadzone Shape" math, as a pure function so it can be
+// checked headlessly (tools/probe_deadzone.cpp). Reads a stick position in
+// [-1,1]^2, writes the deadzoned result - every component stays inside
+// [-1,1] - and returns the output magnitude. dz is the Controller Deadzone
+// setting, shape a DeadzoneShape from settings.h.
+float applyDeadzoneShape(float dz, int shape, float x, float y, float& ox,
+                         float& oy);
+
 class InputSystem {
 public:
     void init(SDL_Window* window, const Settings* settings);

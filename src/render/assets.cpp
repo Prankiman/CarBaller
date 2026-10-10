@@ -505,7 +505,8 @@ bool GameAssets::build(const std::string& meshDir, const std::string& modelDir) 
     }
     {
         MeshBuilder mb;
-        mb.sphere(V3(0, 0, 0), 91.25f, 56, 28, Col(1, 1, 1, 1), /*uvForTexture=*/true);
+        mb.sphere(V3(0, 0, 0), kBallRadius, 56, 28, Col(1, 1, 1, 1),
+                  /*uvForTexture=*/true);
         ball.upload(mb.verts, mb.idx);
         buildBallTexture(ballTex);
     }
@@ -517,6 +518,22 @@ bool GameAssets::build(const std::string& meshDir, const std::string& modelDir) 
         mb.ringZ(V3(0, 0, 0), 74, 91, 64, in2, in);
         mb.ringZ(V3(0, 0, 0), 91, 108, 64, out, out2);
         indicator.upload(mb.verts, mb.idx);
+    }
+    {
+        MeshBuilder mb;
+        // Inner circle of the ball floor indicator: a soft band peaking at
+        // kInnerR (just inside the outer ring's radius-74 hole), built once
+        // at full size and scaled per frame by the renderer, which reads the
+        // ball's height off it - the circle opens towards the ring as the
+        // ball nears the floor and closes to a small dot as it climbs. The
+        // alpha peaks at the band's middle and fades over 5uu on both sides,
+        // so it reads as a line rather than a disc edge, and the whole thing
+        // stays proportional to kInnerR when the renderer scales it.
+        constexpr float w = 5.0f;
+        const Col mid(1, 1, 1, 0.85f), edge(1, 1, 1, 0.0f);
+        mb.ringZ(V3(0, 0, 0), kInnerR - w, kInnerR, 64, edge, mid);
+        mb.ringZ(V3(0, 0, 0), kInnerR, kInnerR + w, 64, mid, edge);
+        indicatorInner.upload(mb.verts, mb.idx);
     }
     {
         MeshBuilder mb;
@@ -566,6 +583,7 @@ void GameAssets::destroy() {
     wheelBack.destroy();
     ball.destroy();
     indicator.destroy();
+    indicatorInner.destroy();
     shadowDisc.destroy();
     flipDisc.destroy();
     ballTex.destroy();

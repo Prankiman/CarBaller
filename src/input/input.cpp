@@ -191,20 +191,44 @@ bool InputSystem::axisBound(int axis) const {
     return false;
 }
 
-float InputSystem::applyDeadzone(float x, float y, float& ox, float& oy) const {
-    float dz = settings_ ? settings_->ctrl.deadzone : 0.1f;
-    int shape = settings_ ? settings_->ctrl.deadzoneShape : 0;
-    if (shape == 1) {
-        // circle / radial
-        float l = std::sqrt(x * x + y * y);
+float applyDeadzoneShape(float dz, int shape, float x, float y, float& ox,
+                         float& oy) {
+    // CIRCLE (RL's radial shape): everything inside the radius is neutral,
+    // the rest is rescaled along its own ray. Direction survives untouched
+    // and the output is capped at magnitude 1, so a diagonal can never
+    // outrun a straight push - which is exactly the complaint against it
+    // ("circle deadzone has limited diagonal speeds").
+    if (shape == DeadzoneCircle) {
+        const float l = std::sqrt(x * x + y * y);
         if (l <= dz) { ox = oy = 0; return 0; }
-        float nl = (l - dz) / (1.0f - dz);
-        nl = clampf(nl, 0, 1);
+        const float nl = clampf((l - dz) / (1.0f - dz), 0.0f, 1.0f);
         ox = x / l * nl;
         oy = y / l * nl;
         return nl;
     }
-    // cross (per-axis), RL community standard
+
+    // SQUARE: the deadzone is tested on the FURTHEST axis, so the neutral
+    // region is the box around the origin - same box cross uses - but then
+    // the whole vector is rescaled by ONE factor instead of per axis. That
+    // is the difference between the two: square keeps the stick's direction
+    // exactly (a half-tilted diagonal stays on that diagonal), while cross
+    // drops each component on its own and so pulls the vector towards
+    // whichever axis is further out. k <= 1 for every input inside the unit
+    // square, so this can only ever shrink a deflection, never boost it.
+    if (shape == DeadzoneSquare) {
+        const float d = std::fmax(std::fabs(x), std::fabs(y));
+        if (d <= dz) { ox = oy = 0; return 0; }
+        const float k = (d - dz) / ((1.0f - dz) * d);
+        ox = x * k;
+        oy = y * k;
+        return std::sqrt(ox * ox + oy * oy);
+    }
+
+    // CROSS (RL's default): each axis is deadzoned and rescaled on its own,
+    // so the axes behave like the two members of a cross - a component
+    // sitting inside the deadzone drops out completely while the other one
+    // passes through untouched. Diagonals come out strong, because both
+    // axes are stretched to full throw independently.
     auto dz1 = [&](float v) {
         float a = std::fabs(v);
         if (a <= dz) return 0.0f;
@@ -214,6 +238,12 @@ float InputSystem::applyDeadzone(float x, float y, float& ox, float& oy) const {
     ox = dz1(x);
     oy = dz1(y);
     return std::sqrt(ox * ox + oy * oy);
+}
+
+float InputSystem::applyDeadzone(float x, float y, float& ox, float& oy) const {
+    const float dz = settings_ ? settings_->ctrl.deadzone : 0.1f;
+    const int shape = settings_ ? settings_->ctrl.deadzoneShape : DeadzoneCross;
+    return applyDeadzoneShape(dz, shape, x, y, ox, oy);
 }
 
 void InputSystem::update() {
