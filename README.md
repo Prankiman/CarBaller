@@ -36,10 +36,11 @@ game.
 - **Fennec body** — the printable [Thingiverse Fennec][fennec-thing] on the real
   Octane hitbox (procedural fallback included).
 - **Custom maps** — load cooked Unreal Engine 3 maps (`.udk` / `.upk`) from
-  **Settings → Map**: geometry, collision (including car-only and ball-only
-  blockers) and per-checkpoint car + ball spawn points, flat-shaded with no
-  textures. Parsing runs on a worker thread, and a failed load always drops
-  you back on the default arena with an error toast in the top-right.
+  **Settings → Map**: static meshes and the level's BSP brush model, collision
+  (including car-only and ball-only blockers) and per-checkpoint car + ball
+  spawn points, flat-shaded with no textures. Parsing runs on a worker thread,
+  and a failed load always drops you back on the default arena with an error
+  toast in the top-right.
 - **Lightweight** — flat-shaded OpenGL 3.3, MSAA & particle quality options,
   no game install required.
 

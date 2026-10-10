@@ -10,6 +10,7 @@
 #include <map>
 #include <unordered_map>
 
+#include "ue3_bsp.h"
 #include "ue3_level.h"
 #include "ue3_mesh.h"
 #include "ue3_package.h"
@@ -369,6 +370,44 @@ bool loadMap(const std::string& path, MapData* out, std::string* err) {
                      out->fileName.c_str(), componentsSeen, out->stats.objectsParsed,
                      aggGeomSeen, out->stats.convexElems);
 
+    // ---- level BSP --------------------------------------------------------
+    // Maps that build part of their geometry with brushes instead of static
+    // meshes expose it through UModelComponent exports; skipping it would leave
+    // holes in both the rendering and the collision.
+    {
+        std::vector<ue3::BspPiece> bsp;
+        std::string berr;
+        if (ue3::readLevelBsp(pk, &bsp, &berr)) {
+            for (const ue3::BspPiece& piece : bsp) {
+                if (piece.tris.empty()) continue;
+                MapShape s;
+                buildShape(piece.verts, piece.tris, {}, {}, "bsp", piece.materialRef, &s);
+                int32_t shape = (int32_t)out->shapes.size();
+                out->shapes.push_back(std::move(s));
+                out->stats.bspTris += (int32_t)(piece.tris.size() / 3);
+
+                MapPlacement pl;
+                pl.shape = shape;
+                pl.xform = M4::identity();  // the level BSP is world-space
+                pl.coll = CollChannel::All;
+                pl.visible = true;
+                pl.collide = true;
+                out->placements.push_back(pl);
+                out->stats.placements++;
+                out->stats.chan[(int)pl.coll]++;
+                out->stats.visiblePlacements++;
+                out->stats.collidePlacements++;
+                expandBounds(out, pl);
+            }
+            if (verbose)
+                std::fprintf(stderr, "[maploader] %s: level BSP %d pieces, %d triangles\n",
+                             out->fileName.c_str(), (int)bsp.size(), out->stats.bspTris);
+        } else if (verbose) {
+            std::fprintf(stderr, "[maploader] %s: no level BSP (%s)\n",
+                         out->fileName.c_str(), berr.c_str());
+        }
+    }
+
     // ---- sessions -------------------------------------------------------
     struct Pending {
         int32_t num;
@@ -496,6 +535,8 @@ std::string describeMap(const MapData& m) {
     s += fmtStr("static meshes   : %d parsed, %d failed\n", m.stats.staticMeshes,
                 m.stats.staticMeshesFailed);
     s += fmtStr("shapes          : %d (%d convex)\n", m.stats.shapes, m.stats.convexElems);
+    if (m.stats.bspTris)
+        s += fmtStr("level BSP       : %d triangles\n", m.stats.bspTris);
     s += fmtStr("placements      : %d (visible %d, colliding %d)\n", m.stats.placements,
                 m.stats.visiblePlacements, m.stats.collidePlacements);
     s += fmtStr("channels        : all=%d vehicle-only=%d ball-only=%d none=%d\n",

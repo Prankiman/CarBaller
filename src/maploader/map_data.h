@@ -69,6 +69,7 @@ struct MapStats {
     int32_t collisionTris = 0;
     int32_t renderTris = 0;
     int32_t convexElems = 0;
+    int32_t bspTris = 0;         // triangles taken from the level's BSP model
     int32_t uniqueTris = 0;
     int32_t sessions = 0;
     int32_t spawnActors = 0;
