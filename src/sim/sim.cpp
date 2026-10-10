@@ -116,6 +116,7 @@ void Sim::shutdown() {
     releaseMapCollision(arena_, mapCol_);
     mapCol_ = nullptr;
     mapLoaded_ = false;
+    mapGen_++;
     map_ = maploader::MapData();
     delete arena_;
     arena_ = nullptr;
@@ -438,6 +439,7 @@ bool Sim::applyMap(maploader::MapData&& data, std::string* err) {
 
     map_ = std::move(data);
     mapLoaded_ = true;
+    mapGen_++;                       // a different map: re-upload, re-collide
     session_ = 0;
     resetShot(0);
     return true;
@@ -447,6 +449,7 @@ void Sim::unloadMap() {
     releaseMapCollision(arena_, mapCol_);
     mapCol_ = nullptr;
     mapLoaded_ = false;
+    mapGen_++;
     session_ = 0;
     map_ = maploader::MapData();
     if (car_) resetShot(0);
@@ -469,6 +472,8 @@ void Sim::updateSessionByProximity() {
         const float d2 = d.x * d.x + d.y * d.y + d.z * d.z;
         if (d2 <= reach2) {
             session_ = (int)i;
+            if (onCheckpointReached)
+                onCheckpointReached(session_, (int)map_.sessions.size());
             return;
         }
     }

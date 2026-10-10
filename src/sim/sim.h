@@ -84,6 +84,10 @@ public:
     bool applyMap(maploader::MapData&& data, std::string* err);
     void unloadMap();
     bool hasMap() const { return mapLoaded_; }
+    // Bumped every time the loaded map changes (load, unload). The renderer
+    // keys its upload off this: hasMap() alone can't tell map A from map B,
+    // so a presence check would leave the first map on screen after a swap.
+    uint64_t mapGen() const { return mapGen_; }
     const maploader::MapData& mapData() const { return map_; }
     int sessionCount() const { return (int)map_.sessions.size(); }
     int sessionIndex() const { return session_; }
@@ -107,6 +111,11 @@ public:
     // Called the tick the car crosses into supersonic (rising edge only, so
     // the sound plays once per burst rather than every tick at speed).
     std::function<void()> onCarSupersonic;
+
+    // Called when driving into reach of a new checkpoint's spawn, with its
+    // index and the map's checkpoint count. Without this the proximity
+    // mechanic is invisible: nothing on screen changes until Reset Shot.
+    std::function<void(int, int)> onCheckpointReached;
 
     float tickDt = 1.0f / 120.0f;
     uint64_t ticksSimulated = 0;
@@ -134,6 +143,7 @@ private:
     maploader::MapData map_;
     maploader::MapCollision* mapCol_ = nullptr;
     bool mapLoaded_ = false;
+    uint64_t mapGen_ = 0;            // identity of the loaded map (see mapGen())
     int session_ = 0;                 // checkpoint Reset Shot returns to
 
     RocketSim::CarState prevCar_{}, curCar_{};

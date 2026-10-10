@@ -84,7 +84,7 @@ struct App {
 
     // ---- custom maps
     MapTabState mapTab;
-    bool rendererMapOn = false;         // renderer currently holds map geometry
+    uint64_t rendererMapGen = 0;        // Sim::mapGen() the renderer last uploaded
     std::unique_ptr<MapJob> mapJob;     // parse in flight (worker thread)
     std::vector<Toast> toasts;          // top-right status/error messages
 };
@@ -340,6 +340,14 @@ int runApp(int argc, char** argv) {
     // so a sustained burst only plays the cue once).
     a.sim.onCarSupersonic = [&a]() { a.audio.playSupersonic(1.0f); };
 
+    // ---- checkpoints are reached by proximity while driving, and nothing
+    // else on screen announces it (Reset Shot is the only visible
+    // consequence), so say it out loud the moment it happens.
+    a.sim.onCheckpointReached = [&a](int idx, int total) {
+        pushToast(a, "Checkpoint " + std::to_string(idx + 1) + " / " + std::to_string(total),
+                  2.5);
+    };
+
     applyGraphics(a);
 
     // ---- main loop
@@ -441,6 +449,16 @@ int runApp(int argc, char** argv) {
             }
         }
 
+        // Test hook: queue a second load once the first one has landed, so a
+        // map-to-map swap (renderer + collision) can be exercised without
+        // driving the file browser.
+        static const char* swapMap = std::getenv("CARBALLER_START_MAP2");
+        static bool swapQueued = false;
+        if (swapMap && !swapQueued && a.sim.hasMap() && !a.mapJob) {
+            swapQueued = true;
+            a.mapTab.loadRequest = swapMap;
+        }
+
         if (!a.mapTab.loadRequest.empty()) {
             if (a.mapJob) {
                 pushToast(a, "Already loading " + a.mapTab.loadingName, 2.5);
@@ -505,10 +523,13 @@ int runApp(int argc, char** argv) {
         a.mapTab.sessions = a.sim.sessionCount();
         a.mapTab.session = a.sim.sessionIndex();
 
-        // keep the renderer's copy of the geometry in step with the sim
-        if (a.sim.hasMap() != a.rendererMapOn) {
-            a.rendererMapOn = a.sim.hasMap();
-            a.renderer.setMap(a.rendererMapOn ? &a.sim.mapData() : nullptr);
+        // Keep the renderer's copy of the geometry in step with the sim. Keyed
+        // on the map generation, not on hasMap(): loading map B over map A
+        // leaves hasMap() true on both sides, so a presence check kept A's
+        // geometry on screen (and B's collision under the car) after a swap.
+        if (a.sim.mapGen() != a.rendererMapGen) {
+            a.rendererMapGen = a.sim.mapGen();
+            a.renderer.setMap(a.sim.hasMap() ? &a.sim.mapData() : nullptr);
         }
 
         // ball cam mode
