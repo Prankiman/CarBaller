@@ -65,18 +65,25 @@ private:
     float pitchOff_ = 0;
     float swivelIdle_ = 0;       // seconds since the last swivel input
 
-    // Car-cam heading: follows the nose while grounded. In the air it is
-    // held at the takeoff axis for kAirDelay, follows the nose for
-    // kAirFollowTime - with a gain that rises as that window closes, so the
-    // heading has arrived on the nose axis by the end - and the rear/front
-    // axis at that instant becomes the lock target. The whole decision
-    // (back vs. front of the car) therefore completes kAirDelay +
-    // kAirFollowTime = 2.0s after takeoff and never moves again until the
-    // car touches ground.
+    // Car-cam heading: the axis the camera sits behind. On the ground it is
+    // the car's facing, tracked rigidly (RL keeps the camera straight as
+    // long as the car is on a surface). In the air the target switches to
+    // the direction of TRAVEL - the horizontal velocity heading, eased onto
+    // at the stiffness-scaled rate in the .cpp, with the facing taking over
+    // again as the speed runs out - so a flip swings the camera behind the
+    // new momentum over ~0.5s while pitching and air rolling move it not at
+    // all, and there is no decision window to wait out.
     float carYaw_ = 0;
-    float lockYaw_ = 0;          // heading the air-follow window settled on
-    float airTime_ = 0;          // seconds since leaving the surface
-    bool locked_ = false;        // air heading determined for this flight
+    // Facing axis read off the frame, kept continuous so a pitch past
+    // vertical (which flips the nose bearing by 180 deg without the car
+    // turning) cannot swing the camera - see kAxisHalfTurn in the .cpp.
+    // Nose and rear are the same line 180 deg apart, so this axis is
+    // equally "behind the rear" whichever end it is named for. That
+    // continuity rule only governs the AIR: on the ground the axis is
+    // re-read from the nose every frame, so it can never stick to the
+    // wrong side and always heals at landing.
+    float axisYaw_ = 0;
+    bool hasAxisYaw_ = false;    // axisYaw_ holds a real bearing
     V3 smoothedEye_{0, 0, 0};
     V3 prevWantEye_{0, 0, 0};    // previous ideal eye, for rig speed
     float prevRigOffZ_ = 0;      // previous rig-relative eye height: splits the
