@@ -295,6 +295,26 @@ void Renderer::render(const RLCamera& cam, const RenderParams& p, const Particle
     if (p.showBallRing) {
         M4 m = M4::translate(V3(s.ballPos.x, s.ballPos.y, 4.0f));
         drawUnlit(assets_.indicator, m, 0.85f, false);
+
+        // Inner circle - RL's height cue inside the ring. The circle opens
+        // towards the ring as the ball's SURFACE nears the floor and closes
+        // to a small dot as it climbs. Exponential in the surface gap, so
+        // the change is proportional (every kGapHalve uu of clearance halves
+        // it) and measured from the surface rather than the centre, so it is
+        // exactly full size - kInnerR, just inside the ring's radius-74 hole
+        // - at the moment of contact, and only ever smaller above it.
+        constexpr float kGapHalve = 650.0f;  // uu of clearance per halving
+        constexpr float kMinR = 3.5f;        // floor: it never quite vanishes
+        const float gap = std::fmax(s.ballPos.z - GameAssets::kBallRadius, 0.0f);
+        const float r =
+            std::fmax(GameAssets::kInnerR * std::exp(-gap / kGapHalve), kMinR);
+        const float sc = r / GameAssets::kInnerR;
+        // Sits just above the ring's plane: the two never overlap (the circle
+        // tops out at 65, the band starts at 74), but this keeps them from
+        // fighting over depth if that geometry is ever tuned closer.
+        M4 mi = M4::translate(V3(s.ballPos.x, s.ballPos.y, 4.2f)) *
+                M4::scale(V3(sc, sc, 1));
+        drawUnlit(assets_.indicatorInner, mi, 0.85f, false);
     }
 
     // ---------- flip reset indicator (Settings > Camera): a glowing hollow

@@ -110,7 +110,10 @@ void drawCameraTab(CameraSettings& c, bool& changed) {
     check("Ball Arrow", &c.ballArrow, changed,
           "Draw an arrow pointing at the ball while in car cam (Rocket League's 'Ball Arrow').");
     check("Ball Floor Projection", &c.ballFloorProjection, changed,
-          "Project the ball's position onto the ground as a shadow/marker.");
+          "Project the ball's position onto the ground as a shadow/marker. "
+          "The marker carries an inner circle as a height cue - it opens up "
+          "as the ball nears the floor and shrinks to a dot the higher the "
+          "ball goes (Rocket League's ball indicator).");
     check("Flip Reset Indicator", &c.flipResetIndicator, changed,
           "Rocket League's flip reset indicator: a glowing white hollow disc "
           "that hangs under your car's underside while you are holding a reset "
