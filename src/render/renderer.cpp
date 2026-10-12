@@ -473,15 +473,24 @@ void Renderer::render(const RLCamera& cam, const RenderParams& p, const Particle
     if (!mapOn) drawUnlit(assets_.markings, M4::identity(), 1.0f, false);
 
     if (p.showShadows) {
-        float carA = clampf(1.0f - s.carPos.z / 500.0f, 0, 1);
+        // Both discs sit on the arena's fixed floor at z=3; a loaded map's
+        // floor is wherever the car last stood (s.floorZ) and its ball rests
+        // on whatever is under it, which we hang off the ball - the same
+        // estimate the ring below uses. Read against world z, both discs would
+        // hang in the sky over a map whose ground is a kilometre lower.
+        const float carGround = s.hasMapFloor ? s.floorZ : 0.0f;
+        float carA = clampf(1.0f - (s.carPos.z - carGround) / 500.0f, 0, 1);
         if (carA > 0.01f) {
-            M4 m = M4::translate(V3(s.carPos.x, s.carPos.y, 3.0f)) *
+            M4 m = M4::translate(V3(s.carPos.x, s.carPos.y,
+                                    s.hasMapFloor ? s.floorZ + 1.0f : 3.0f)) *
                    M4::scale(V3(72, 66, 1));
             drawUnlit(assets_.shadowDisc, m, carA, false);
         }
-        float ballA = clampf(1.0f - s.ballPos.z / 700.0f, 0, 1);
+        const float ballGround = mapOn ? s.ballPos.z - GameAssets::kBallRadius : 0.0f;
+        float ballA = clampf(1.0f - (s.ballPos.z - ballGround) / 700.0f, 0, 1);
         if (ballA > 0.01f) {
-            M4 m = M4::translate(V3(s.ballPos.x, s.ballPos.y, 3.5f)) *
+            M4 m = M4::translate(V3(s.ballPos.x, s.ballPos.y,
+                                    mapOn ? ballGround + 0.5f : 3.5f)) *
                    M4::scale(V3(95, 95, 1));
             drawUnlit(assets_.shadowDisc, m, ballA, false);
         }
@@ -510,7 +519,7 @@ void Renderer::render(const RLCamera& cam, const RenderParams& p, const Particle
         // Sits just above the ring's plane: the two never overlap (the circle
         // tops out at 65, the band starts at 74), but this keeps them from
         // fighting over depth if that geometry is ever tuned closer.
-        M4 mi = M4::translate(V3(s.ballPos.x, s.ballPos.y, 4.2f)) *
+        M4 mi = M4::translate(V3(s.ballPos.x, s.ballPos.y, ringZ + 0.2f)) *
                 M4::scale(V3(sc, sc, 1));
         drawUnlit(assets_.indicatorInner, mi, 0.85f, false);
     }

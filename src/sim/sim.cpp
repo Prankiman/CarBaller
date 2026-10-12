@@ -26,6 +26,8 @@ static constexpr uint64_t kThudCooldownTicks = 8;          // ~67 ms
 // Wheel contacts at or below this height are the floor (a resting car sits at
 // ~17 uu); anything higher is a ball/wall/ceiling touch, i.e. a flip reset.
 static constexpr float kFloorClearanceZ = 60.0f;
+// Car origin above the surface it is resting on (see kFloorClearanceZ).
+static constexpr float kCarRestZ = 17.0f;
 // Age stops accumulating here: the indicator only needs the first flash.
 static constexpr float kFlipResetAgeMax = 10.0f;
 // Octane wheel bottoms (mount -4.5, r 12.5 front / -2.0, r 15 rear) sit this
@@ -132,6 +134,11 @@ void Sim::stepOnce() {
 
     curCar_ = car_->GetState();
     curBall_ = arena_->ball->GetState();
+
+    // Remember the ground under the car while it is standing on something: on
+    // a loaded map that plane can be a kilometre below the default arena's,
+    // and it is what the camera uses to keep its eye out of the floor.
+    if (mapLoaded_ && curCar_.isOnGround) mapFloorZ_ = curCar_.pos.z - kCarRestZ;
 
     // boost never drains (also guarantees full meter even if mutator is bypassed)
     if (curCar_.boost < 100) {
@@ -265,6 +272,8 @@ SimSnapshot Sim::snapshot(float alpha) const {
 
     s.boost = curCar_.boost;
     s.onGround = curCar_.isOnGround;
+    s.hasMapFloor = mapLoaded_;
+    s.floorZ = mapFloorZ_;
     s.boosting = curCar_.isBoosting;
     s.supersonic = curCar_.isSupersonic;
     s.jumping = curCar_.isJumping;
@@ -462,20 +471,36 @@ void Sim::cycleSession(int delta) {
     resetShot(session_);
 }
 
+// A checkpoint is reached by proximity, but it only takes over when it is
+// strictly the closest one to the car. Without that comparison two points
+// inside each other's reach (PathNodes cluster several per platform) hand the
+// session back and forth every frame, firing the callback the whole way.
 void Sim::updateSessionByProximity() {
     if (map_.sessions.empty()) return;
+    if (session_ < 0 || session_ >= (int)map_.sessions.size()) session_ = 0;
     const V3 p(curCar_.pos.x, curCar_.pos.y, curCar_.pos.z);
-    const float reach2 = kCheckpointReach * kCheckpointReach;
+    const V3 here = map_.sessions[(size_t)session_].carPos - p;
+    const float here2 = here.dot(here);
+
+    int best = -1;
+    float best2 = 0.f;
     for (size_t i = 0; i < map_.sessions.size(); i++) {
         if ((int)i == session_) continue;
-        const V3 d = map_.sessions[i].carPos - p;
-        const float d2 = d.x * d.x + d.y * d.y + d.z * d.z;
-        if (d2 <= reach2) {
-            session_ = (int)i;
-            if (onCheckpointReached)
-                onCheckpointReached(session_, (int)map_.sessions.size());
-            return;
+        const maploader::MapSession& s = map_.sessions[i];
+        const float reach = s.reach > 0.f ? s.reach : kCheckpointReach;
+        const V3 d = s.carPos - p;
+        const float d2 = d.dot(d);
+        if (d2 > reach * reach) continue;
+        if (best < 0 || d2 < best2) {
+            best = (int)i;
+            best2 = d2;
         }
+    }
+
+    if (best >= 0 && best2 < here2) {
+        session_ = best;
+        if (onCheckpointReached)
+            onCheckpointReached(session_, (int)map_.sessions.size());
     }
 }
 

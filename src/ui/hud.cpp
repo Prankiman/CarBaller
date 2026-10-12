@@ -1,6 +1,7 @@
 #include "hud.h"
 
 #include <imgui.h>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 
@@ -14,14 +15,71 @@ void arc(ImDrawList* dl, ImVec2 c, float radius, float a0, float a1, ImU32 color
     dl->PathStroke(color, false, thick);
 }
 
+// Custom maps: show every checkpoint of the loaded map, with the one to head
+// for picked out. Their routes run for kilometres across maps made of floating
+// platforms, so without markers the proximity trigger is pure guesswork.
+void checkpointMarkers(ImDrawList* dl, ImFont* font, const Renderer& renderer, const Sim& sim,
+                       const SimSnapshot& snap, int w, int h) {
+    if (sim.sessionCount() < 2) return;  // default arena: nothing to show
+    const std::vector<maploader::MapSession>& sessions = sim.mapData().sessions;
+    int cur = sim.sessionIndex();
+    if (cur < 0) cur = 0;
+    if (cur >= (int)sessions.size()) cur = (int)sessions.size() - 1;
+    const int nxt = cur + 1 < (int)sessions.size() ? cur + 1 : -1;
+
+    // the rest of the route, dim and small
+    for (size_t i = 0; i < sessions.size(); i++) {
+        if ((int)i == cur || (int)i == nxt) continue;
+        float sx, sy;
+        if (!renderer.project(sessions[i].carPos, sx, sy)) continue;
+        if (sx < -30.0f || sy < -30.0f || sx > w + 30.0f || sy > h + 30.0f) continue;
+        const float dist = (sessions[i].carPos - snap.carPos).len();
+        const float fade = clampf(1.0f - dist / 80000.0f, 0.35f, 1.0f);
+        dl->AddCircle(ImVec2(sx, sy), 5.0f, col4(150, 200, 255, int(80 * fade)), 16, 1.5f);
+    }
+
+    // where the car is standing right now
+    if (cur < (int)sessions.size()) {
+        float sx, sy;
+        if (renderer.project(sessions[(size_t)cur].carPos, sx, sy) && sx >= 0.0f && sy >= 0.0f &&
+            sx <= w && sy <= h)
+            dl->AddCircle(ImVec2(sx, sy), 9.0f, col4(120, 220, 255, 190), 24, 2.0f);
+    }
+
+    if (nxt < 0) return;  // end of the route
+    const maploader::MapSession& s = sessions[(size_t)nxt];
+    const float dist = (s.carPos - snap.carPos).len();
+    float sx = 0.0f, sy = 0.0f;
+    bool onScreen =
+        renderer.project(s.carPos, sx, sy) && sx > 40.0f && sy > 40.0f && sx < w - 40.0f &&
+        sy < h - 40.0f;
+    if (!onScreen) {
+        // Off the side of the screen: pin it to the frame so the way round is
+        // still visible. (Behind the camera it projects to nothing at all.)
+        if (!renderer.project(s.carPos, sx, sy)) return;
+        sx = clampf(sx, 48.0f, float(w) - 48.0f);
+        sy = clampf(sy, 48.0f, float(h) - 48.0f);
+    }
+    const ImU32 orange = col4(255, 168, 44, 235);
+    dl->AddCircleFilled(ImVec2(sx, sy), onScreen ? 7.0f : 5.0f, orange, 24);
+    if (onScreen) dl->AddCircle(ImVec2(sx, sy), 13.0f, col4(255, 168, 44, 120), 32, 2.0f);
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%s %d m", onScreen ? "NEXT" : "", int(dist / 100.0f + 0.5f));
+    const ImVec2 ts = font->CalcTextSizeA(15.0f, FLT_MAX, 0.0f, buf);
+    dl->AddText(ImVec2(sx - ts.x * 0.5f, sy + (onScreen ? 17.0f : 11.0f)), orange, buf);
+}
+
 }  // namespace
 
 void HUD::draw(const SimSnapshot& snap, const RLCamera& cam, const Renderer& renderer,
-               const Settings& settings, int w, int h, float fps, bool statsVisible,
-               bool menuOpen) {
+               const Settings& settings, const Sim& sim, int w, int h, float fps,
+               bool statsVisible, bool menuOpen) {
     if (w <= 0 || h <= 0) return;
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     ImFont* font = ImGui::GetFont();
+
+    // ---------------- map checkpoints (only when a custom map is loaded)
+    checkpointMarkers(dl, font, renderer, sim, snap, w, h);
 
     // ---------------- boost gauge (bottom right)
     {

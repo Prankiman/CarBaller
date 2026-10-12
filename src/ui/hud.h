@@ -10,6 +10,6 @@
 class HUD {
 public:
     void draw(const SimSnapshot& snap, const RLCamera& cam, const Renderer& renderer,
-              const Settings& settings, int w, int h, float fps, bool statsVisible,
-              bool menuOpen);
+              const Settings& settings, const Sim& sim, int w, int h, float fps,
+              bool statsVisible, bool menuOpen);
 };

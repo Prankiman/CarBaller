@@ -54,6 +54,11 @@ struct MapSession {
     bool hasCar = false;
     V3 ballPos;
     bool hasBall = false;
+    // Built by sanitizeSessions() from the map's PathNodes rather than from a
+    // numbered spawn series, and placed on solid ground by it.
+    bool derived = false;
+    // How close the car must get for this checkpoint to count as reached.
+    float reach = 600.f;
 };
 
 struct MapStats {

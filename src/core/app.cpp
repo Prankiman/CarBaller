@@ -755,7 +755,7 @@ int runApp(int argc, char** argv) {
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
 
-        a.hud.draw(snap, a.cam, a.renderer, a.settings, dw, dh, fpsSmoothed,
+        a.hud.draw(snap, a.cam, a.renderer, a.settings, a.sim, dw, dh, fpsSmoothed,
                    a.statsVisible, a.menuOpen);
 
         // ---------------- toasts (top-right, over everything)

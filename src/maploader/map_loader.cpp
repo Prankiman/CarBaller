@@ -10,6 +10,7 @@
 #include <map>
 #include <unordered_map>
 
+#include "map_sessions.h"
 #include "ue3_bsp.h"
 #include "ue3_level.h"
 #include "ue3_mesh.h"
@@ -494,47 +495,30 @@ bool loadMap(const std::string& path, MapData* out, std::string* err) {
     // Only Dribble-style maps ship a numbered spawn series (PlayerSpawn01..);
     // a map with a lone PlayerStart would otherwise have nothing to step
     // through. UE3 PathNodes are the mapper's own navigation points along the
-    // intended route, so on those maps they become checkpoints: drive within
-    // range of one and it marks itself reached like any other. Ordered by
-    // nearest-neighbour from the map's own start so prev/next walks a sane
-    // route instead of package order.
+    // intended route, so on those maps they become checkpoints. They are raw
+    // points here - placement on solid ground, ordering and reach radii are
+    // sorted out by sanitizeSessions() once every session is known.
     if (out->sessions.size() < 2 && !pathNodes.empty()) {
-        const V3 start =
-            out->sessions.empty() ? pathNodes.front().pos : out->sessions.front().carPos;
-        std::vector<Pending> route;
-        std::vector<Pending> rest = pathNodes;
-        V3 cur = start;
-        while (!rest.empty()) {
-            size_t best = 0;
-            float bestD = 3.4e38f;
-            for (size_t i = 0; i < rest.size(); i++) {
-                const V3 d = rest[i].pos - cur;
-                const float d2 = d.x * d.x + d.y * d.y + d.z * d.z;
-                if (d2 < bestD) {
-                    bestD = d2;
-                    best = i;
-                }
-            }
-            route.push_back(rest[best]);
-            cur = rest[best].pos;
-            rest.erase(rest.begin() + (long)best);
-        }
-        for (size_t i = 0; i < route.size(); i++) {
+        int n2 = 0;
+        for (const Pending& pn : pathNodes) {
             MapSession s;
             char buf[16];
-            std::snprintf(buf, sizeof buf, "Nav%02d", (int)i + 1);
+            std::snprintf(buf, sizeof buf, "Nav%02d", ++n2);
             s.name = buf;
-            s.carPos = route[i].pos;
+            s.carPos = pn.pos;
+            s.carYawRad = (float)ue3::unitsToRad(pn.yaw);
             s.hasCar = true;
-            // Face the next checkpoint along the route; the last looks back at
-            // the one it came from rather than into whatever is ahead of it.
-            const V3 to = (i + 1 < route.size())
-                              ? route[i + 1].pos - route[i].pos
-                              : (i > 0 ? route[i - 1].pos - route[i].pos : V3(0.f, 1.f, 0.f));
-            s.carYawRad = std::atan2(to.y, to.x);
+            s.derived = true;
             out->sessions.push_back(s);
         }
-        out->stats.derivedSessions = (int32_t)route.size();
+    }
+
+    {
+        std::string slog;
+        sanitizeSessions(out, &slog);
+        if (verbose && !slog.empty())
+            std::fprintf(stderr, "[maploader] %s: sessions: %s\n", out->fileName.c_str(),
+                         slog.c_str());
     }
 
     // ---- stats ----------------------------------------------------------
@@ -610,9 +594,9 @@ std::string describeMap(const MapData& m) {
                         .c_str()
                     : "");
     for (const MapSession& ses : m.sessions) {
-        s += fmtStr("  [%s] car=(%.0f, %.0f, %.0f) yaw=%.1fdeg", ses.name.c_str(),
+        s += fmtStr("  [%s] car=(%.0f, %.0f, %.0f) yaw=%.1fdeg reach=%.0f", ses.name.c_str(),
                     ses.carPos.x, ses.carPos.y, ses.carPos.z,
-                    ses.carYawRad * 57.2957795f);
+                    ses.carYawRad * 57.2957795f, ses.reach);
         if (ses.hasBall)
             s += fmtStr(" ball=(%.0f, %.0f, %.0f)\n", ses.ballPos.x, ses.ballPos.y,
                         ses.ballPos.z);

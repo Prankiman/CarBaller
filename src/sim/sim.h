@@ -21,6 +21,11 @@ struct SimSnapshot {
     V3 ballF, ballR, ballU;       // interpolated ball orientation (spin)
     float boost = 100;
     bool onGround = true;
+    // Custom maps only: the surface the car was last standing on. Loaded maps
+    // put that surface anywhere in z, so the camera cannot assume the default
+    // arena's floor height when deciding how far its eye may drop.
+    bool hasMapFloor = false;
+    float floorZ = 0;
     bool boosting = false;
     bool supersonic = false;
     bool jumping = false;
@@ -145,6 +150,7 @@ private:
     bool mapLoaded_ = false;
     uint64_t mapGen_ = 0;            // identity of the loaded map (see mapGen())
     int session_ = 0;                 // checkpoint Reset Shot returns to
+    float mapFloorZ_ = 0;            // last surface the car stood on (camera floor)
 
     RocketSim::CarState prevCar_{}, curCar_{};
     RocketSim::BallState prevBall_{}, curBall_{};

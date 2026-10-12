@@ -109,8 +109,21 @@ void RLCamera::placeEye(const CameraSettings& cs, const SimSnapshot& s,
 
     float elev = e0 - pitchOff_;
 
-    const float minZ = s.onGround ? std::max(kEyeFloorZ, s.carPos.z - kCarRideHeight)
-                                  : kEyeFloorZ;
+    // The stop is kEyeFloorZ *above the surface we are looking over*. On the
+    // ground that surface is the one the car rests on; in the air it is the
+    // arena floor (z = 0) or, on a loaded map, the last ground the car stood
+    // on - loaded maps put their floors anywhere in z, and reading the stop as
+    // an absolute arena height would throw the rig to its elevation limit
+    // there and pitch the whole view at the sky.
+    float surface;
+    if (s.onGround) {
+        surface = s.carPos.z - kCarRideHeight;
+    } else if (s.hasMapFloor) {
+        surface = std::min(s.floorZ, s.carPos.z);
+    } else {
+        surface = 0.0f;
+    }
+    const float minZ = surface + kEyeFloorZ;
     const float sinMin = clampf((minZ - s.carPos.z) / rigR, -1.0f, 1.0f);
     elev = std::max(elev, std::asin(sinMin));
     elev = clampf(elev, -kMaxElev, kMaxElev);
