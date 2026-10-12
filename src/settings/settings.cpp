@@ -249,8 +249,9 @@ bool Settings::load(const std::string& path) {
     cam.swivelSpeed = clampf(cam.swivelSpeed, 1.0f, 10.0f);
     cam.transitionSpeed = clampf(cam.transitionSpeed, 1.0f, 2.0f);
     cam.mouseSens = clampf(cam.mouseSens, 1.0f, 100.0f);
-    ctrl.steerSens = clampf(ctrl.steerSens, 1.0f, 10.0f);
-    ctrl.aerialSens = clampf(ctrl.aerialSens, 1.0f, 10.0f);
+    // Sensitivities reach down to 0.10 (below RL's 1.00 floor, see settings.h).
+    ctrl.steerSens = clampf(ctrl.steerSens, 0.10f, 10.0f);
+    ctrl.aerialSens = clampf(ctrl.aerialSens, 0.10f, 10.0f);
     ctrl.deadzone = clampf(ctrl.deadzone, 0.0f, 0.75f);
     ctrl.dodgeDeadzone = clampf(ctrl.dodgeDeadzone, 0.10f, 1.0f);
     ctrl.keyboardSteerSmooth = clampf(ctrl.keyboardSteerSmooth, 0.0f, 0.25f);

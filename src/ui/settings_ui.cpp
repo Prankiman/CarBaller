@@ -128,10 +128,14 @@ void drawCameraTab(CameraSettings& c, bool& changed) {
 }
 
 void drawControlsTab(ControlSettings& c, bool& changed) {
-    sliderF("Steering Sensitivity", &c.steerSens, 1.0f, 10.0f, "%.2f", changed,
-            "Scales stick steering input. Rocket League: 1.00 - 10.00 (default 1.00).");
-    sliderF("Aerial Sensitivity", &c.aerialSens, 1.0f, 10.0f, "%.2f", changed,
-            "Scales pitch and yaw stick input while airborne. Rocket League: 1.00 - 10.00 (default 1.00).");
+    sliderF("Steering Sensitivity", &c.steerSens, 0.10f, 10.0f, "%.2f", changed,
+            "Scales stick steering input (keys are never scaled). Rocket League's "
+            "slider runs 1.00 - 10.00 (default 1.00); ours drops to 0.10 for "
+            "finer-than-Rocket-League control.");
+    sliderF("Aerial Sensitivity", &c.aerialSens, 0.10f, 10.0f, "%.2f", changed,
+            "Scales pitch, yaw and air-roll stick input while airborne (keys are "
+            "never scaled). Rocket League's slider runs 1.00 - 10.00 (default "
+            "1.00); ours drops to 0.10 for finer-than-Rocket-League control.");
     sliderF("Controller Deadzone", &c.deadzone, 0.0f, 0.75f, "%.2f", changed,
             "Stick input inside the deadzone is neutral. Rocket League: 0.00 - 0.75 (default 0.20, patch v1.74).");
     sliderF("Dodge Deadzone", &c.dodgeDeadzone, 0.10f, 1.0f, "%.2f", changed,

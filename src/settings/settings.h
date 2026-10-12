@@ -53,6 +53,9 @@ struct Bindings {
 // Ranges/defaults below mirror Rocket League's settings menus:
 //   camera + deadzone ranges per Liquipedia's Settings article;
 //   distance/stiffness/deadzone defaults per Psyonix patch v1.74 (2020-03-10).
+// One deliberate deviation: the two sensitivities go down to 0.10, below RL's
+// own 1.00 floor, for finer-than-Rocket-League stick control (keys are not
+// scaled by them at all - see InputSystem::steer / toControls).
 struct CameraSettings {
     float fov = 110.0f;            // 60..110 (RL), horizontal FOV
     float distance = 270.0f;       // 100..400 (RL; 270 = v1.74 default)
@@ -84,8 +87,8 @@ enum DeadzoneShape {
 };
 
 struct ControlSettings {
-    float steerSens = 1.0f;        // 1..10 (RL; default 1.00)
-    float aerialSens = 1.0f;       // 1..10 (RL; default 1.00)
+    float steerSens = 1.0f;        // 0.10..10 (RL: 1.00..10; default 1.00)
+    float aerialSens = 1.0f;       // 0.10..10 (RL: 1.00..10; default 1.00)
     float deadzone = 0.20f;        // 0..0.75 (RL; 0.20 = v1.74 default)
     float dodgeDeadzone = 0.80f;   // 0.10..1.00 (RL; 0.80 = v1.74 default)
     int deadzoneShape = DeadzoneCross;
