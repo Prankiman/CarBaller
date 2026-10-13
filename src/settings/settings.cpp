@@ -217,7 +217,9 @@ bool Settings::load(const std::string& path) {
         if (sound.volume > 1.0f) sound.volume = 1.0f;
     }
     if (j.contains("bindings")) {
-        auto def = Bindings::defaults();
+        // binds already starts at the defaults (Settings::binds), so an action
+        // the file does not pin down - including one saved as an empty list,
+        // e.g. "Pause / Menu": [] - simply keeps its default.
         for (auto& [name, arr] : j["bindings"].items()) {
             // match by display name
             for (int i = 0; i < (int)Action::COUNT_; i++) {
@@ -233,16 +235,9 @@ bool Settings::load(const std::string& path) {
                 }
             }
         }
-        // any action missing from file keeps defaults
-        for (int i = 0; i < (int)Action::COUNT_; i++) {
-            Action a = (Action)i;
-            if (binds.binds.find(a) == binds.binds.end()) binds.binds[a] = def.get(a);
-        }
         // NB: an empty "Pause / Menu" list in the file is skipped above and so
-        // lands in the "missing from file" case - the default binds come back.
-        // (A file with no bindings block at all leaves every action unbound;
-        // InputSystem::actionRaw's Escape fallback is what keeps the menu
-        // reachable there, since the menu has no other way in.)
+        // keeps its default binds. (InputSystem::actionRaw's Escape fallback
+        // still covers a Pause list emptied at runtime by the Bindings tab.)
     }
 
     // Clamp everything to the ranges shown in the settings UI (RL ranges).

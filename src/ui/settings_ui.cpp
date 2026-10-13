@@ -440,8 +440,7 @@ void drawSoundTab(SoundSettings& s, bool& changed) {
 void drawResetTab(Settings& settings, InputSystem& input, bool& changed) {
     ImGui::TextWrapped("Restore every setting to its Rocket League-style default.");
     if (ImGui::Button("Reset All to Defaults")) {
-        Settings fresh;                    // defaults for camera/controls/freeplay/graphics
-        fresh.binds = Bindings::defaults();  // Settings{} leaves bindings empty
+        Settings fresh;                    // defaults for camera/controls/bindings
         settings = fresh;
         input.setBindings(settings.binds);
         input.cancelCapture();

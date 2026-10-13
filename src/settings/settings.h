@@ -122,7 +122,12 @@ struct Settings {
     FreeplaySettings freeplay;
     GraphicsSettings gfx;
     SoundSettings sound;
-    Bindings binds;
+    // Defaults, not empty: a first run with no settings.json yet, or a file
+    // with no bindings block in it, has to leave the player with working
+    // controls - an empty map meant nothing was bound at all, menu included
+    // (see InputSystem::actionRaw's Escape fallback). load() overwrites per
+    // action from the file and leaves the rest at these.
+    Bindings binds = Bindings::defaults();
 
     bool load(const std::string& path);
     bool save(const std::string& path) const;

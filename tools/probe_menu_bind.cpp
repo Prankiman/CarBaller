@@ -109,8 +109,8 @@ int main() {
               "empty Pause list in the file comes back as the defaults", "Esc restored");
     }
 
-    // ---- 5. a settings.json with no bindings block at all leaves every
-    // action unbound - the worst lockout - and Esc must still open the menu.
+    // ---- 5. a settings.json with no bindings block at all (and a first run
+    // with no file) must still leave the player with working controls.
     {
         FILE* f = std::fopen("/tmp/opencode/menu_nobinds.json", "w");
         std::fputs("{\"camera\":{\"fov\":100}}", f);
@@ -120,12 +120,20 @@ int main() {
             std::printf("load failed\n");
             return 1;
         }
-        check(bare.binds.get(Action::Throttle).empty(),
-              "no bindings block: controls really are all unbound",
-              "Throttle empty (pre-existing)");
+        check(!bare.binds.get(Action::Throttle).empty() &&
+                  !bare.binds.get(Action::Pause).empty(),
+              "no bindings block: every action keeps its default binds",
+              "Throttle + Pause bound");
+
+        // and the same for a first run, where there is no file at all
+        Settings none;
+        check(!none.load("/tmp/opencode/menu_nobinds_missing.json") &&
+                  !none.binds.get(Action::Throttle).empty(),
+              "no settings.json at all: controls are the RL defaults",
+              "Throttle bound");
 
         InputSystem in2;
-        in2.init(nullptr, &bare);
+        in2.init(nullptr, &none);
         in2.update();
         pressEsc();
         in2.update();
