@@ -36,6 +36,7 @@ struct MapShape {
     std::vector<uint32_t> idx;   // triangle list
     V3 boundsMin, boundsMax;     // local AABB (for an early-out / sanity check)
     std::string name;            // source object name (debugging)
+    bool rigidBody = true;       // mesh-level: false = rendered but never blocks
 };
 
 struct MapPlacement {

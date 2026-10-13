@@ -341,13 +341,17 @@ bool parseChain(Cursor& c, const std::vector<std::string>& names, std::vector<Pr
 
         int32_t payloadStart = c.o;
         int32_t payloadEnd = payloadStart + size;
-        if (payloadEnd > c.end) return false;
+        // size < 0 would make every payload assign below iterate backwards
+        // (a length_error abort); a payload that cannot even hold the count
+        // it starts with is just as broken.
+        if (payloadEnd > c.end || payloadEnd < payloadStart) return false;
 
         if (ptype == "ArrayProperty") {
             int32_t count = c.i32();
             p.isArray = true;
             p.arrayCount = count;
             int32_t rem = payloadEnd - c.o;
+            if (rem < 0) return false;
             int32_t sub = c.o;
             bool done = false;
             if (count > 0 && rem == count * 4) {

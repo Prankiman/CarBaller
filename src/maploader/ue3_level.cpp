@@ -37,9 +37,14 @@ bool propRot(const Prop* p, int32_t* pitch, int32_t* yaw, int32_t* roll) {
 M4 makeXform(const V3& loc, int32_t pitch, int32_t yaw, int32_t roll, const V3& scale) {
     double cy = std::cos(unitsToRad(pitch)), sy = std::sin(unitsToRad(pitch));
     double cz = std::cos(unitsToRad(yaw)), sz = std::sin(unitsToRad(yaw));
-    double cx = std::cos(unitsToRad(roll)), sx = std::sin(unitsToRad(roll));
+    // UE3 rotators are not a plain right-handed rotation: the engine's matrix
+    // is Rz(yaw) * Ry(-pitch) * Rx(-roll) - pitch up is positive and roll
+    // banks the opposite way from the naive composition (validated against the
+    // reference loader: with +roll the StartingPlatform/checkmark/Goalposts
+    // placements come out mirrored).
+    double cx = std::cos(-unitsToRad(roll)), sx = std::sin(-unitsToRad(roll));
 
-    // R = Rz(yaw) * Ry(-pitch) * Rx(roll), row-major
+    // R = Rz(yaw) * Ry(-pitch) * Rx(-roll), row-major
     double R[3][3];
     R[0][0] = cz * cy;
     R[0][1] = -cz * sy * sx - sz * cx;
@@ -100,6 +105,11 @@ bool scanActors(const Package& pk, std::vector<ActorRec>* actors,
         if (d3) propVec3(d3, &a.drawScale3D);
         const Prop* ds = findProp(chain, "DrawScale");
         if (ds && ds->data.size() >= 4) a.drawScale = ds->f32();
+        const Prop* ahid = findProp(chain, "HiddenGame");
+        if (ahid && ahid->type == "BoolProperty") a.hidden = ahid->boolVal != 0;
+        const Prop* adis = findProp(chain, "bDisableAllRigidBody");
+        if (adis && adis->type == "BoolProperty")
+            a.disableAllRigidBody = adis->boolVal != 0;
         (*actors)[(size_t)i] = a;
 
         for (const Prop& p : chain) {
@@ -152,7 +162,28 @@ bool readComponent(const Package& pk, int32_t exportIdx, int headerLen, Componen
     propRot(findProp(chain, "RelativeRotation"), &out->relPitch, &out->relYaw, &out->relRoll);
     const Prop* sc = findProp(chain, "RelativeScale3D");
     if (!sc) sc = findProp(chain, "Scale3D");
-    if (sc) propVec3(sc, &out->scale3D);
+    if (sc) {
+        propVec3(sc, &out->scale3D);
+    } else {
+        // Cooked UE3 sometimes serializes a uniform float Scale instead of a
+        // vector (Leth's 1054 ice floor tiles carry Scale=2048); without it
+        // those placements come out at 1:1 and effectively vanish.
+        const Prop* su = findProp(chain, "Scale");
+        if (su && su->data.size() >= 4 &&
+            (su->type == "FloatProperty" || su->type == "IntProperty")) {
+            float u = 1.f;
+            if (su->type == "FloatProperty") {
+                std::memcpy(&u, su->data.data(), 4);
+            } else {
+                int32_t iv = 1;
+                std::memcpy(&iv, su->data.data(), 4);
+                u = (float)iv;
+            }
+            out->scale3D = V3{u, u, u};
+        }
+    }
+    const Prop* hid = findProp(chain, "HiddenGame");
+    if (hid && hid->type == "BoolProperty") out->hidden = hid->boolVal != 0;
 
     out->hasAggGeom = findProp(chain, "BrushAggGeom") != nullptr ||
                       findProp(chain, "AggGeom") != nullptr;

@@ -32,6 +32,10 @@ struct StaticMeshParse {
     int32_t headerLen = 0;
     int32_t bytesLeft = 0;
 
+    // Static collision designation: false when the real game renders this
+    // mesh but never blocks (goal sheets, sky sphere, signs).
+    bool rigidBody = true;
+
     // LOD0
     std::vector<V3> pos;    // one vertex position each
     std::vector<float> uv;  // 2 floats per vertex (texcoord set 0)

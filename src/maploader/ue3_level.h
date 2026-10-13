@@ -29,6 +29,8 @@ struct ActorRec {
     int32_t pitch = 0, yaw = 0, roll = 0;
     V3 drawScale3D{1, 1, 1};
     float drawScale = 1.f;
+    bool hidden = false;     // HiddenGame: editor-only decoration
+    bool disableAllRigidBody = false;  // renders, never blocks (Ice Rings rings)
 };
 
 // `actors` is indexed by export index (invalid entries are not actors).
@@ -47,6 +49,7 @@ struct ComponentRec {
     int32_t staticMeshRef = -1;  // export index of the StaticMesh, -1 when none
     bool blockRigidBody = true;  // UE3 default when the property is absent
     bool disableAllRigidBody = false;
+    bool hidden = false;         // HiddenGame: not drawn, no collision
     CollChannel coll = CollChannel::All;
     bool hasAggGeom = false;     // BrushAggGeom / AggGeom present in the chain
 };

@@ -181,16 +181,33 @@ bool isBlockingVolumeClass(const std::string& cls) {
     return cls.find("BlockingVolume") != std::string::npos;
 }
 
+// True when an export could be the actor a component hangs off: not a
+// component, not a class default object, not a world/level container.
+bool ownerLike(const Package& pk, int32_t oi) {
+    const std::string cls = pk.exportClassName(oi);
+    if (cls.empty()) return false;
+    if (cls.size() >= 9 && cls.compare(cls.size() - 9, 9, "Component") == 0) return false;
+    const std::string nm = pk.exportName(oi);
+    if (nm.rfind("Default__", 0) == 0) return false;
+    if (cls == "Level" || cls == "World") return false;
+    return true;
+}
+
 int32_t findOwner(const Package& pk, int32_t compIdx,
                   const std::vector<int32_t>& ownerOf,
                   const std::vector<ue3::ActorRec>& actors) {
     if (compIdx >= 0 && (size_t)compIdx < ownerOf.size() && ownerOf[(size_t)compIdx] >= 0)
         return ownerOf[(size_t)compIdx];
+    // The Outer chain is UE's real ownership link (subobjects hang off their
+    // actor). Accept the actor even when it serializes no Location of its own
+    // - UE3 omits default-valued properties, so such an actor sits at the
+    // world origin, which is where world-authored meshes (Dribble's goals)
+    // belong.
     int32_t outer = pk.ex(compIdx).outerRef;
     for (int guard = 0; guard < 8 && outer > 0; guard++) {
         int32_t oi = outer - 1;
         if (oi < 0 || oi >= (int32_t)actors.size()) break;
-        if (actors[(size_t)oi].valid) return oi;
+        if (ownerLike(pk, oi)) return oi;
         outer = pk.ex(oi).outerRef;
     }
     return -1;
@@ -279,11 +296,30 @@ bool loadMap(const std::string& path, MapData* out, std::string* err) {
         }
         out->stats.objectsParsed++;
         comp.ownerIdx = findOwner(pk, i, ownerOf, actors);
-
         M4 xform = M4::identity();
-        if (comp.ownerIdx >= 0 && comp.ownerIdx < (int32_t)actors.size() &&
-            actors[(size_t)comp.ownerIdx].valid)
-            xform = actorXform(actors[(size_t)comp.ownerIdx]);
+        bool ownerHidden = false;
+        bool ownerDisabled = false;  // actor-level bDisableAllRigidBody
+        if (comp.ownerIdx >= 0) {
+            const ue3::ActorRec& own = actors[(size_t)comp.ownerIdx];
+            if (own.valid) {
+                xform = actorXform(own);
+                ownerHidden = own.hidden;
+                ownerDisabled = own.disableAllRigidBody;
+            } else {
+                // The owner actor serializes no Location: it sits at the world
+                // origin (UE3 omits default-valued properties). Re-read its
+                // chain just for the gameplay flags.
+                std::vector<ue3::Prop> ochain;
+                int oh = 0;
+                int32_t oce = 0;
+                if (pk.parseObject(comp.ownerIdx, &oh, &ochain, &oce, nullptr)) {
+                    const ue3::Prop* h = ue3::findProp(ochain, "HiddenGame");
+                    if (h && h->type == "BoolProperty") ownerHidden = h->boolVal != 0;
+                    const ue3::Prop* d = ue3::findProp(ochain, "bDisableAllRigidBody");
+                    if (d && d->type == "BoolProperty") ownerDisabled = d->boolVal != 0;
+                }
+            }
+        }
         xform = xform * ue3::makeXform(comp.relativeLoc, comp.relPitch, comp.relYaw,
                                        comp.relRoll, comp.scale3D);
 
@@ -299,22 +335,52 @@ bool loadMap(const std::string& path, MapData* out, std::string* err) {
                     MapShape s;
                     buildShape(mp.pos, mp.idx, mp.uv, mp.sections,
                                pk.exportName(comp.staticMeshRef), comp.staticMeshRef, &s);
+                    s.rigidBody = mp.rigidBody;
                     shape = (int32_t)out->shapes.size();
                     out->shapes.push_back(std::move(s));
                     out->stats.staticMeshes++;
                 } else {
+                    if (verbose)
+                        std::fprintf(stderr, "[rd] MESHFAIL %d %s: %s\n",
+                                     comp.staticMeshRef,
+                                     pk.exportName(comp.staticMeshRef).c_str(),
+                                     merr.c_str());
                     out->stats.staticMeshesFailed++;
                 }
                 meshShape[comp.staticMeshRef] = shape;
             }
             if (shape < 0) continue;
 
+            // A component whose owning actor cannot be resolved (orphan or
+            // archetype subobject) has no world transform to sit at - drawing
+            // it would strand the mesh at the origin, so it is left out.
+            if (comp.ownerIdx < 0) continue;
+
+            // HiddenGame decoration exists only in the editor: not drawn and
+            // no collision (Net_Collision boxes, the barrier above Leth's
+            // arena, doors waiting on Kismet).
+            const bool hidden = comp.hidden || ownerHidden;
+
             MapPlacement pl;
             pl.shape = shape;
             pl.xform = xform;
             pl.coll = comp.coll;
-            pl.visible = true;
-            pl.collide = comp.blockRigidBody && comp.coll != CollChannel::None;
+            pl.visible = !hidden;
+            // Blocks unless hidden, rigid bodies disabled anywhere in the
+            // chain (component/actor), the component says BlockRigidBody=false,
+            // its channel is RBCC_None, or the mesh itself carries no rigid
+            // body designation (render-only scenery).
+            pl.collide = !hidden && !ownerDisabled && comp.blockRigidBody &&
+                         comp.coll != CollChannel::None &&
+                         out->shapes[shape].rigidBody;
+            if (verbose) {
+                std::fprintf(stderr, "[rd] PL %d %s h=%d s=%d m=", i,
+                             pk.exportName(comp.staticMeshRef).c_str(), int(hidden),
+                             int(pl.collide));
+                for (int q = 0; q < 16; q++)
+                    std::fprintf(stderr, "%.6f%s", (double)pl.xform.m[q],
+                                 q == 15 ? "\n" : " ");
+            }
             out->placements.push_back(pl);
             out->stats.placements++;
             out->stats.chan[(int)pl.coll]++;

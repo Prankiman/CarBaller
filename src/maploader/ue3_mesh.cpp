@@ -252,11 +252,34 @@ bool parseStaticMesh(const Package& pk, int32_t exportIdx, StaticMeshParse* out,
     // UStaticMesh is a plain UObject: 4-byte NetIndex + property chain.
     std::vector<Prop> chain;
     int32_t chainEnd = off + 4;
+    bool chainOk = true;
     if (e.serialSize > 4 && !pk.parseObjectAt(exportIdx, 4, &chain, &chainEnd)) {
         chainEnd = off + 4;  // fall back like the reference parser
         chain.clear();
+        chainOk = false;
     }
     out->headerLen = chainEnd - off;
+
+    // Static collision designation (UE3 UStaticMesh flags; cooked packages
+    // only serialize non-default values, so the class default applies):
+    //  - UseSimpleRigidBodyCollision=false: rigid bodies use the render
+    //    triangles as their collision mesh (every solid floor/ring).
+    //  - =true (the class default, so absent on goal sheets / sky sphere /
+    //    signs): only the BodySetup's simple shapes collide - and with no
+    //    BodySetup object the mesh has no collision at all in the real game.
+    // Such meshes still render; they just never block.
+    if (chainOk) {
+        bool useSimple = true;
+        const Prop* rb = findProp(chain, "UseSimpleRigidBodyCollision");
+        if (rb && rb->type == "BoolProperty") useSimple = rb->boolVal != 0;
+        out->rigidBody = true;
+        if (useSimple) {
+            const Prop* bs = findProp(chain, "BodySetup");
+            out->rigidBody =
+                bs && bs->type == "ObjectProperty" && bs->data.size() >= 4 &&
+                bs->i32(0) > 0;
+        }
+    }
 
     Cursor c(pk.bytes(), chainEnd, end);
     if (!c.need(28)) {

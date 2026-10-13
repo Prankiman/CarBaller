@@ -38,7 +38,10 @@ game.
 - **Custom maps** — load cooked Unreal Engine 3 maps (`.udk` / `.upk`) from
   **Settings → Map**: static meshes and the level's BSP brush model, collision
   (including car-only and ball-only blockers) and per-checkpoint car + ball
-  spawn points, flat-shaded with no textures. Driving into a checkpoint's spawn
+  spawn points, flat-shaded with no textures. Visibility and collision follow
+  the game's own flags: editor-only decoration (`HiddenGame`) is not drawn,
+  and scenery the real game renders but never blocks (signs, sky spheres)
+  stays non-solid. Driving into a checkpoint's spawn
   marks it reached (a toast announces it) and Reset Shot sends car and ball
   back there. Maps that ship no numbered spawn series of their own get their
   checkpoints from the level's navigation points, so every map has some; each
