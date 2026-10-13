@@ -6,6 +6,9 @@
 #include <imgui.h>
 
 #include <cfloat>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 
 namespace {
@@ -14,6 +17,60 @@ namespace {
 // RL-style widget helpers. Each one flips *changed (bool&) when the user
 // edits a value, so draw() can report "something changed this frame".
 // ------------------------------------------------------------------------
+
+// Right-clicking a slider opens this popup to type the exact value in
+// instead of dragging to it. Enter applies it and closes, clicking away
+// from the field applies it too. Text that isn't a number is ignored - the
+// setting keeps the value it had - and a number past either end snaps to
+// the end the slider would have clamped to anyway, so the typed path and
+// the dragging path always agree on the range.
+// (Ctrl+click/double-click already reach ImGui's own temp input; this is
+// the mouse-only way round.)
+template <typename T, typename Parse>
+bool typedValuePopup(const char* id, T* v, T lo, T hi, Parse parse) {
+    static char buf[32];
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+        std::snprintf(buf, sizeof buf, "%.6g", double(*v));  // seed, plain digits
+        ImGui::OpenPopup(id);
+    }
+    if (!ImGui::BeginPopup(id)) return false;
+
+    bool applied = false;
+    ImGui::SetKeyboardFocusHere();
+    ImGui::SetNextItemWidth(120.0f);
+    const bool enter =
+        ImGui::InputText("##value", buf, sizeof buf,
+                         ImGuiInputTextFlags_EnterReturnsTrue |
+                         ImGuiInputTextFlags_CharsDecimal |
+                         ImGuiInputTextFlags_AutoSelectAll);
+    if (enter || ImGui::IsItemDeactivatedAfterEdit()) {
+        char* end = nullptr;
+        const double x = parse(buf, &end);
+        if (end != buf && std::isfinite(x)) {  // "-"/""/garbage: leave it alone
+            const T clamped = (x < double(lo)) ? lo
+                                               : (x > double(hi)) ? hi : T(x);
+            if (clamped != *v) {
+                *v = clamped;
+                applied = true;
+            }
+        }
+        if (enter) ImGui::CloseCurrentPopup();
+    }
+    ImGui::TextDisabled("Enter = apply, Esc/click away = cancel");
+    ImGui::EndPopup();
+    return applied;
+}
+
+inline bool typedValuePopup(const char* id, float* v, float lo, float hi) {
+    return typedValuePopup(
+        id, v, lo, hi,
+        [](const char* s, char** e) { return std::strtod(s, e); });
+}
+inline bool typedValuePopup(const char* id, int* v, int lo, int hi) {
+    return typedValuePopup(
+        id, v, lo, hi,
+        [](const char* s, char** e) { return double(std::strtol(s, e, 10)); });
+}
 
 // Label on the left, slider spanning the rest of the row.
 void sliderF(const char* label, float* v, float lo, float hi,
@@ -25,8 +82,12 @@ void sliderF(const char* label, float* v, float lo, float hi,
     const std::string id = std::string("##") + label;
     if (ImGui::SliderFloat(id.c_str(), v, lo, hi, fmt, ImGuiSliderFlags_AlwaysClamp))
         changed = true;
+    // Tip first: the popup below replaces the tooltip's "last item".
+    if (tip)
+        ImGui::SetItemTooltip("%s\n\nRight-click the slider to type the value in.",
+                              tip);
+    if (typedValuePopup(id.c_str(), v, lo, hi)) changed = true;
     ImGui::PopItemWidth();
-    if (tip) ImGui::SetItemTooltip("%s", tip);
 }
 
 void check(const char* label, bool* v, bool& changed, const char* tip = nullptr) {
@@ -218,8 +279,10 @@ void drawGraphicsTab(GraphicsSettings& g, bool& changed) {
     ImGui::PushItemWidth(-FLT_MIN);
     if (ImGui::SliderInt("##FPS Limit", &g.fpsCap, 0, 360, "%d", ImGuiSliderFlags_AlwaysClamp))
         changed = true;
+    if (typedValuePopup("##FPS Limit", &g.fpsCap, 0, 360)) changed = true;
     ImGui::PopItemWidth();
-    ImGui::SetItemTooltip("Cap the frame rate (0 - 360).");
+    ImGui::SetItemTooltip("Cap the frame rate (0 = unlimited, 1 - 360). "
+                          "Right-click the slider to type the value in.");
     if (g.fpsCap == 0) ImGui::TextDisabled("Unlimited");
 
     static const char* kParticles[] = {"Low", "Med", "High"};
@@ -355,10 +418,14 @@ void drawSoundTab(SoundSettings& s, bool& changed) {
         s.volume = pct / 100.0f;
         changed = true;
     }
+    if (typedValuePopup("##Volume", &pct, 0.0f, 100.0f)) {
+        s.volume = pct / 100.0f;
+        changed = true;
+    }
     ImGui::PopItemWidth();
     ImGui::SetItemTooltip(
         "Master volume for all sound effects (menu, boost, engine, jumps, "
-        "ball impacts).");
+        "ball impacts). Right-click the slider to type the value in.");
     ImGui::TextDisabled(
         "Sounds: menu clicks, boost, engine hum, jumps/flips and ball hits.");
 }
