@@ -41,7 +41,11 @@ game.
   spawn points, flat-shaded with no textures. Driving into a checkpoint's spawn
   marks it reached (a toast announces it) and Reset Shot sends car and ball
   back there. Maps that ship no numbered spawn series of their own get their
-  checkpoints from the level's navigation points, so every map has some.
+  checkpoints from the level's navigation points, so every map has some; each
+  spawn is then checked against the map's own collision and moved onto ground
+  a car can actually stand on (points over nothing are dropped, near-duplicates
+  collapse into one). The HUD marks every checkpoint of the route, picking out
+  the next one and showing how far away it is.
   Parsing runs on a worker thread, and a failed load always drops you back on
   the default arena with an error toast in the top-right.
 - **Lightweight** — flat-shaded OpenGL 3.3, MSAA & particle quality options,
@@ -144,8 +148,8 @@ Everything — including each stick direction — is rebindable in the in-game
 With a custom map loaded (**Settings → Map**) the last four actions change
 meaning: **Launch Ball** and **Take Possession** step to the previous / next
 checkpoint (car and ball teleport there), and **Reset Shot** returns to the
-checkpoint you last reached on foot. On the default arena they keep the
-behaviour shown above.
+current one — whether you drove into it or stepped to it with those keys. On
+the default arena they keep the behaviour shown above.
 
 ## Configuration
 
