@@ -228,7 +228,9 @@ bool Settings::load(const std::string& path) {
         if (sound.volume > 1.0f) sound.volume = 1.0f;
     }
     if (j.contains("bindings")) {
-        auto def = Bindings::defaults();
+        // binds already starts at the defaults (Settings::binds), so an action
+        // the file does not pin down - including one saved as an empty list,
+        // e.g. "Pause / Menu": [] - simply keeps its default.
         for (auto& [name, arr] : j["bindings"].items()) {
             // match by display name
             for (int i = 0; i < (int)Action::COUNT_; i++) {
@@ -244,11 +246,9 @@ bool Settings::load(const std::string& path) {
                 }
             }
         }
-        // any action missing from file keeps defaults
-        for (int i = 0; i < (int)Action::COUNT_; i++) {
-            Action a = (Action)i;
-            if (binds.binds.find(a) == binds.binds.end()) binds.binds[a] = def.get(a);
-        }
+        // NB: an empty "Pause / Menu" list in the file is skipped above and so
+        // keeps its default binds. (InputSystem::actionRaw's Escape fallback
+        // still covers a Pause list emptied at runtime by the Bindings tab.)
     }
 
     // Clamp everything to the ranges shown in the settings UI (RL ranges).
@@ -260,8 +260,9 @@ bool Settings::load(const std::string& path) {
     cam.swivelSpeed = clampf(cam.swivelSpeed, 1.0f, 10.0f);
     cam.transitionSpeed = clampf(cam.transitionSpeed, 1.0f, 2.0f);
     cam.mouseSens = clampf(cam.mouseSens, 1.0f, 100.0f);
-    ctrl.steerSens = clampf(ctrl.steerSens, 1.0f, 10.0f);
-    ctrl.aerialSens = clampf(ctrl.aerialSens, 1.0f, 10.0f);
+    // Sensitivities reach down to 0.10 (below RL's 1.00 floor, see settings.h).
+    ctrl.steerSens = clampf(ctrl.steerSens, 0.10f, 10.0f);
+    ctrl.aerialSens = clampf(ctrl.aerialSens, 0.10f, 10.0f);
     ctrl.deadzone = clampf(ctrl.deadzone, 0.0f, 0.75f);
     ctrl.dodgeDeadzone = clampf(ctrl.dodgeDeadzone, 0.10f, 1.0f);
     ctrl.keyboardSteerSmooth = clampf(ctrl.keyboardSteerSmooth, 0.0f, 0.25f);

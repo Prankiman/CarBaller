@@ -8,7 +8,9 @@
 #include <algorithm>
 #include <cctype>
 #include <cfloat>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -20,9 +22,100 @@ namespace {
 // edits a value, so draw() can report "something changed this frame".
 // ------------------------------------------------------------------------
 
+// Right-clicking a slider opens this popup to type the exact value in
+// instead of dragging to it. Enter applies it and closes; Esc closes it and
+// throws the edit away, which means it has to beat ImGui at its own game (see
+// below). Text that isn't a number is ignored - the setting keeps the value
+// it had - and a number past either end snaps to the end the slider would
+// have clamped to anyway, so the typed path and the dragging path always
+// agree on the range.
+// (Ctrl+click/double-click already reach ImGui's own temp input; this is
+// the mouse-only way round.)
+//
+// Esc is caught here, before the field sees it. ImGui's own Esc routing
+// (imgui_widgets.cpp, InputText) never closes a popup that owns a text
+// field: it rewrites the buffer back to what was there when focus was taken,
+// which trips IsItemDeactivatedAfterEdit() and hands that reverted text to
+// the setting - the opposite of cancelling. EscapeClearsAll suppresses the
+// revert, so the field stays inert and the cancel below is the only thing
+// that acts on the key.
+//
+// Clicking away is deliberately not a third way out. It is genuinely
+// inconsistent: a click inside the settings window lands on the window that
+// owns the popup, so ImGui leaves the popup up, while a click outside
+// dismisses it - and the deactivation either way used to apply the value.
+// Promising three ways to close something that closes reliably in one has
+// cost more than it saves, so the hint below names Enter and Esc only.
+template <typename T, typename Parse>
+bool typedValuePopup(const char* id, T* v, T lo, T hi, Parse parse,
+                     bool& entryOpen) {
+    static char buf[32];
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+        std::snprintf(buf, sizeof buf, "%.6g", double(*v));  // seed, plain digits
+        ImGui::OpenPopup(id);
+    }
+    if (!ImGui::BeginPopup(id)) return false;
+
+    // Esc before the field: also the frame the popup is raised, so a right
+    // click followed by an Esc closes it rather than leaving it stranded.
+    const bool cancel = ImGui::IsKeyPressed(ImGuiKey_Escape);
+    // Only once BeginPopup() said yes, so other popups drawn the same frame
+    // cannot raise the flag. Cleared on close (below) rather than at the top
+    // of draw(): the menu's Escape toggle reads it *before* draw() runs, so
+    // resetting there would give the popup a dead Escape on its first frame.
+    entryOpen = true;
+
+    bool applied = false;
+    bool close = cancel;
+    if (!cancel) {
+        ImGui::SetKeyboardFocusHere();
+        ImGui::SetNextItemWidth(120.0f);
+        const bool enter =
+            ImGui::InputText("##value", buf, sizeof buf,
+                             ImGuiInputTextFlags_EnterReturnsTrue |
+                                 ImGuiInputTextFlags_CharsDecimal |
+                                 ImGuiInputTextFlags_AutoSelectAll |
+                                 ImGuiInputTextFlags_EscapeClearsAll);
+        if (enter) {
+            char* end = nullptr;
+            const double x = parse(buf, &end);
+            if (end != buf && std::isfinite(x)) {  // "-"/""/garbage: leave it alone
+                const T clamped = (x < double(lo)) ? lo
+                                                   : (x > double(hi)) ? hi : T(x);
+                if (clamped != *v) {
+                    *v = clamped;
+                    applied = true;
+                }
+            }
+            close = true;
+        }
+    }
+    if (close) {
+        entryOpen = false;  // this frame's answer, read by app.cpp
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::TextDisabled("Enter = apply, Esc = cancel");
+    ImGui::EndPopup();
+    return applied;
+}
+
+inline bool typedValuePopup(const char* id, float* v, float lo, float hi,
+                            bool& entryOpen) {
+    return typedValuePopup(
+        id, v, lo, hi,
+        [](const char* s, char** e) { return std::strtod(s, e); }, entryOpen);
+}
+inline bool typedValuePopup(const char* id, int* v, int lo, int hi,
+                            bool& entryOpen) {
+    return typedValuePopup(
+        id, v, lo, hi,
+        [](const char* s, char** e) { return double(std::strtol(s, e, 10)); },
+        entryOpen);
+}
+
 // Label on the left, slider spanning the rest of the row.
-void sliderF(const char* label, float* v, float lo, float hi,
-             const char* fmt, bool& changed, const char* tip = nullptr) {
+void sliderF(const char* label, float* v, float lo, float hi, const char* fmt,
+             bool& changed, bool& entryOpen, const char* tip = nullptr) {
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(label);
     ImGui::SameLine();
@@ -30,8 +123,12 @@ void sliderF(const char* label, float* v, float lo, float hi,
     const std::string id = std::string("##") + label;
     if (ImGui::SliderFloat(id.c_str(), v, lo, hi, fmt, ImGuiSliderFlags_AlwaysClamp))
         changed = true;
+    // Tip first: the popup below replaces the tooltip's "last item".
+    if (tip)
+        ImGui::SetItemTooltip("%s\n\nRight-click the slider to type the value in.",
+                              tip);
+    if (typedValuePopup(id.c_str(), v, lo, hi, entryOpen)) changed = true;
     ImGui::PopItemWidth();
-    if (tip) ImGui::SetItemTooltip("%s", tip);
 }
 
 void check(const char* label, bool* v, bool& changed, const char* tip = nullptr) {
@@ -75,7 +172,7 @@ void capturePlaceholder() {
 // Tabs
 // ------------------------------------------------------------------------
 
-void drawCameraTab(CameraSettings& c, bool& changed) {
+void drawCameraTab(CameraSettings& c, bool& changed, bool& entryOpen) {
     // RL order (Liquipedia/Epic): shake first, then FOV, Height, Angle,
     // Distance, Stiffness, Swivel Speed, Transition Speed.
     check("Camera Shake", &c.shake, changed,
@@ -87,19 +184,19 @@ void drawCameraTab(CameraSettings& c, bool& changed) {
           "angle (Rocket League's snap behavior). Off keeps the swivel where "
           "you left it.");
 
-    sliderF("FOV", &c.fov, 60.0f, 110.0f, "%.0f", changed,
+    sliderF("FOV", &c.fov, 60.0f, 110.0f, "%.0f", changed, entryOpen,
             "Horizontal field of view. Rocket League: 60 - 110 (default 110).");
-    sliderF("Height", &c.height, 40.0f, 200.0f, "%.0f", changed,
+    sliderF("Height", &c.height, 40.0f, 200.0f, "%.0f", changed, entryOpen,
             "How high above the car the camera floats. Rocket League: 40 - 200 (default 100).");
-    sliderF("Angle", &c.angle, -45.0f, 0.0f, "%.0f", changed,
+    sliderF("Angle", &c.angle, -45.0f, 0.0f, "%.0f", changed, entryOpen,
             "Camera pitch relative to the car; negative looks down. Rocket League: -45 - 0 (default -4).");
-    sliderF("Distance", &c.distance, 100.0f, 400.0f, "%.0f", changed,
+    sliderF("Distance", &c.distance, 100.0f, 400.0f, "%.0f", changed, entryOpen,
             "How far the camera sits behind the car. Rocket League: 100 - 400 (default 270).");
-    sliderF("Stiffness", &c.stiffness, 0.0f, 1.0f, "%.2f", changed,
+    sliderF("Stiffness", &c.stiffness, 0.0f, 1.0f, "%.2f", changed, entryOpen,
             "How rigidly the camera follows the car. Higher = tighter, lower = floatier. Rocket League: 0 - 1 (default 0.50).");
-    sliderF("Swivel Speed", &c.swivelSpeed, 1.0f, 10.0f, "%.1f", changed,
+    sliderF("Swivel Speed", &c.swivelSpeed, 1.0f, 10.0f, "%.1f", changed, entryOpen,
             "How fast the camera swivels when you look around. Rocket League: 1 - 10.");
-    sliderF("Transition Speed", &c.transitionSpeed, 1.0f, 2.0f, "%.2f", changed,
+    sliderF("Transition Speed", &c.transitionSpeed, 1.0f, 2.0f, "%.2f", changed, entryOpen,
             "How quickly the camera blends between car cam and ball cam. Rocket League: 1 - 2.");
 
     ImGui::SeparatorText("Options");
@@ -128,18 +225,22 @@ void drawCameraTab(CameraSettings& c, bool& changed) {
     check("Mouse Swivel", &c.mouseSwivel, changed,
           "Let the mouse swivel the camera while the settings menu is closed.");
 
-    sliderF("Mouse Sensitivity", &c.mouseSens, 1.0f, 100.0f, "%.0f", changed,
+    sliderF("Mouse Sensitivity", &c.mouseSens, 1.0f, 100.0f, "%.0f", changed, entryOpen,
             "How much mouse movement swivels the camera. Rocket League: 1 - 100.");
 }
 
-void drawControlsTab(ControlSettings& c, bool& changed) {
-    sliderF("Steering Sensitivity", &c.steerSens, 1.0f, 10.0f, "%.2f", changed,
-            "Scales stick steering input. Rocket League: 1.00 - 10.00 (default 1.00).");
-    sliderF("Aerial Sensitivity", &c.aerialSens, 1.0f, 10.0f, "%.2f", changed,
-            "Scales pitch and yaw stick input while airborne. Rocket League: 1.00 - 10.00 (default 1.00).");
-    sliderF("Controller Deadzone", &c.deadzone, 0.0f, 0.75f, "%.2f", changed,
+void drawControlsTab(ControlSettings& c, bool& changed, bool& entryOpen) {
+    sliderF("Steering Sensitivity", &c.steerSens, 0.10f, 10.0f, "%.2f", changed, entryOpen,
+            "Scales stick steering input (keys are never scaled). Rocket League's "
+            "slider runs 1.00 - 10.00 (default 1.00); ours drops to 0.10 for "
+            "finer-than-Rocket-League control.");
+    sliderF("Aerial Sensitivity", &c.aerialSens, 0.10f, 10.0f, "%.2f", changed, entryOpen,
+            "Scales pitch, yaw and air-roll stick input while airborne (keys are "
+            "never scaled). Rocket League's slider runs 1.00 - 10.00 (default "
+            "1.00); ours drops to 0.10 for finer-than-Rocket-League control.");
+    sliderF("Controller Deadzone", &c.deadzone, 0.0f, 0.75f, "%.2f", changed, entryOpen,
             "Stick input inside the deadzone is neutral. Rocket League: 0.00 - 0.75 (default 0.20, patch v1.74).");
-    sliderF("Dodge Deadzone", &c.dodgeDeadzone, 0.10f, 1.0f, "%.2f", changed,
+    sliderF("Dodge Deadzone", &c.dodgeDeadzone, 0.10f, 1.0f, "%.2f", changed, entryOpen,
             "How far the stick must move with jump to dodge instead of double-jumping. "
             "Rocket League: 0.10 - 1.00 (default 0.80, patch v1.74); applied to the car's dodgeDeadzone.");
 
@@ -178,22 +279,22 @@ void drawControlsTab(ControlSettings& c, bool& changed) {
           "gamepad). Rocket League ships with vibration ON.");
 }
 
-void drawFreeplayTab(FreeplaySettings& f, bool& changed) {
+void drawFreeplayTab(FreeplaySettings& f, bool& changed, bool& entryOpen) {
     static const char* kPresets[] = {
         resetShotPresetName(0), resetShotPresetName(1), resetShotPresetName(2),
         resetShotPresetName(3), resetShotPresetName(4), resetShotPresetName(5),
     };
 
-    sliderF("Game Speed", &f.gameSpeed, 0.0f, 150.0f, "%.0f%%", changed,
+    sliderF("Game Speed", &f.gameSpeed, 0.0f, 150.0f, "%.0f%%", changed, entryOpen,
             "How fast the simulation runs: 0% freezes the car and ball for a "
             "setup, 50% is half speed for learning mechanics, 100% is normal, "
             "150% is the ceiling. The camera keeps swiveling either way.");
 
-    sliderF("Launch Ball Speed", &f.launchSpeed, 1000.0f, 5000.0f, "%.0f uu/s", changed,
+    sliderF("Launch Ball Speed", &f.launchSpeed, 1000.0f, 5000.0f, "%.0f uu/s", changed, entryOpen,
             "Speed of the ball when 'Launch Ball' is pressed. The ball is fired "
             "from wherever it already is - it is never teleported back to the "
             "middle of the field.");
-    sliderF("Launch Angle", &f.launchAngle, -90.0f, 90.0f, "%.0f deg", changed,
+    sliderF("Launch Angle", &f.launchAngle, -90.0f, 90.0f, "%.0f deg", changed, entryOpen,
             "Angle of the launched ball: 0 = straight downfield, 90 = straight "
             "up, negative = angled back down.");
 
@@ -204,7 +305,7 @@ void drawFreeplayTab(FreeplaySettings& f, bool& changed) {
     f.resetShotPreset = preset;
 }
 
-void drawGraphicsTab(GraphicsSettings& g, bool& changed) {
+void drawGraphicsTab(GraphicsSettings& g, bool& changed, bool& entryOpen) {
     check("VSync", &g.vsync, changed,
           "Synchronize frames to the display refresh rate.");
 
@@ -215,8 +316,10 @@ void drawGraphicsTab(GraphicsSettings& g, bool& changed) {
     ImGui::PushItemWidth(-FLT_MIN);
     if (ImGui::SliderInt("##FPS Limit", &g.fpsCap, 0, 360, "%d", ImGuiSliderFlags_AlwaysClamp))
         changed = true;
+    if (typedValuePopup("##FPS Limit", &g.fpsCap, 0, 360, entryOpen)) changed = true;
     ImGui::PopItemWidth();
-    ImGui::SetItemTooltip("Cap the frame rate (0 - 360).");
+    ImGui::SetItemTooltip("Cap the frame rate (0 = unlimited, 1 - 360). "
+                          "Right-click the slider to type the value in.");
     if (g.fpsCap == 0) ImGui::TextDisabled("Unlimited");
 
     static const char* kParticles[] = {"Low", "Med", "High"};
@@ -230,7 +333,7 @@ void drawGraphicsTab(GraphicsSettings& g, bool& changed) {
     g.msaa = (msaaIdx == 1) ? 4 : (msaaIdx == 2) ? 8 : 0;
     ImGui::TextDisabled("MSAA changes require restarting the game to take effect.");
 
-    sliderF("Wall Opacity", &g.wallOpacity, 0.0f, 1.0f, "%.2f", changed,
+    sliderF("Wall Opacity", &g.wallOpacity, 0.0f, 1.0f, "%.2f", changed, entryOpen,
             "Opacity of the arena walls and ceiling (Rocket League keeps them "
             "see-through), so you can always see the car and ball through them. "
             "0 = invisible, 1 = solid. Default 0.30.");
@@ -289,6 +392,13 @@ void drawBindingsTab(Settings& settings, InputSystem& input, bool& changed) {
             ImGui::PopID();
         }
 
+        // An unbound menu action still reads Esc (InputSystem::actionRaw), so
+        // say so rather than let the empty row look like the menu is gone.
+        if (row.empty() && a == Action::Pause) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(unbound - Esc still opens the menu)");
+        }
+
         // ---- binding buttons (next line)
         int removeSlot = -1;      // at most one of these fires per frame
         int recaptureSlot = -1;
@@ -341,7 +451,7 @@ void drawBindingsTab(Settings& settings, InputSystem& input, bool& changed) {
     }
 }
 
-void drawSoundTab(SoundSettings& s, bool& changed) {
+void drawSoundTab(SoundSettings& s, bool& changed, bool& entryOpen) {
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Volume");
     ImGui::SameLine();
@@ -352,10 +462,14 @@ void drawSoundTab(SoundSettings& s, bool& changed) {
         s.volume = pct / 100.0f;
         changed = true;
     }
+    if (typedValuePopup("##Volume", &pct, 0.0f, 100.0f, entryOpen)) {
+        s.volume = pct / 100.0f;
+        changed = true;
+    }
     ImGui::PopItemWidth();
     ImGui::SetItemTooltip(
         "Master volume for all sound effects (menu, boost, engine, jumps, "
-        "ball impacts).");
+        "ball impacts). Right-click the slider to type the value in.");
     ImGui::TextDisabled(
         "Sounds: menu clicks, boost, engine hum, jumps/flips and ball hits.");
 }
@@ -363,8 +477,7 @@ void drawSoundTab(SoundSettings& s, bool& changed) {
 void drawResetTab(Settings& settings, InputSystem& input, bool& changed) {
     ImGui::TextWrapped("Restore every setting to its Rocket League-style default.");
     if (ImGui::Button("Reset All to Defaults")) {
-        Settings fresh;                    // defaults for camera/controls/freeplay/graphics
-        fresh.binds = Bindings::defaults();  // Settings{} leaves bindings empty
+        Settings fresh;                    // defaults for camera/controls/bindings
         settings = fresh;
         input.setBindings(settings.binds);
         input.cancelCapture();
@@ -382,29 +495,33 @@ void drawResetTab(Settings& settings, InputSystem& input, bool& changed) {
 bool SettingsUI::draw(Settings& settings, InputSystem& input, bool* pOpen, MapTabState& map) {
     anyChanged = false;
     bool& changed = anyChanged;
+    // Recomputed every frame by whichever popup is up, so a closed menu or a
+    // closed popup reports false and cannot leave Escape permanently dead.
+    bool& entryOpen = valueEntryOpen_;
 
     ImGui::SetNextWindowSize(ImVec2(620.0f, 720.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Settings", pOpen, ImGuiWindowFlags_NoCollapse)) {
         ImGui::End();
+        valueEntryOpen_ = false;
         return anyChanged;
     }
 
     if (ImGui::BeginTabBar("SettingsTabs")) {
         if (ImGui::BeginTabItem("Camera")) {
             ImGui::PushID("Camera");
-            drawCameraTab(settings.cam, changed);
+            drawCameraTab(settings.cam, changed, entryOpen);
             ImGui::PopID();
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Controls")) {
             ImGui::PushID("Controls");
-            drawControlsTab(settings.ctrl, changed);
+            drawControlsTab(settings.ctrl, changed, entryOpen);
             ImGui::PopID();
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Freeplay")) {
             ImGui::PushID("Freeplay");
-            drawFreeplayTab(settings.freeplay, changed);
+            drawFreeplayTab(settings.freeplay, changed, entryOpen);
             ImGui::PopID();
             ImGui::EndTabItem();
         }
@@ -418,13 +535,13 @@ bool SettingsUI::draw(Settings& settings, InputSystem& input, bool* pOpen, MapTa
         }
         if (ImGui::BeginTabItem("Graphics")) {
             ImGui::PushID("Graphics");
-            drawGraphicsTab(settings.gfx, changed);
+            drawGraphicsTab(settings.gfx, changed, entryOpen);
             ImGui::PopID();
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Sound")) {
             ImGui::PushID("Sound");
-            drawSoundTab(settings.sound, changed);
+            drawSoundTab(settings.sound, changed, entryOpen);
             ImGui::PopID();
             ImGui::EndTabItem();
         }

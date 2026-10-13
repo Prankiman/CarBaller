@@ -31,6 +31,12 @@ public:
     // (caller should re-apply things like vsync, and save).
     bool draw(Settings& settings, InputSystem& input, bool* pOpen, MapTabState& map);
 
+    // True while a right-click "type a value" popup is showing, as of the
+    // most recent draw(). app.cpp holds the menu's Escape while this is set,
+    // so Escape cancels the edit first and only a second press resumes.
+    // Reset on both draw() exits, so a closed menu never reports true.
+    bool valueEntryOpen() const { return valueEntryOpen_; }
+
     bool anyChanged = false;   // set by draw() when a value changed this frame
 
     // Test hook: force the Map tab to come to the front on the next draw
@@ -46,4 +52,5 @@ private:
     std::vector<std::pair<std::string, bool>> browseRows_;  // (name, isDir)
     char pathBuf_[640] = {};
     bool browseError_ = false;
+    bool valueEntryOpen_ = false;
 };

@@ -394,7 +394,14 @@ int runApp(int argc, char** argv) {
         // during the drop) would otherwise desync the phases - and without
         // this gate the test is only reproducible when nobody touches a pad.
         bool escSwallowed = a.input.consumeSwallowedEsc();
-        if (a.input.pressed(Action::Pause) && !escSwallowed && !selfTest) {
+        // A typed-value popup claims Esc to cancel the edit. It cannot reach
+        // the toggle in the frame the key goes down (this runs on raw state,
+        // before ImGui::NewFrame()), so it reports itself and the toggle waits
+        // a frame. First Esc cancels the edit, a second closes the menu.
+        const bool valueEntryTakesEsc =
+            a.menuOpen && a.settingsUI.valueEntryOpen();
+        if (a.input.pressed(Action::Pause) && !escSwallowed && !selfTest &&
+            !valueEntryTakesEsc) {
             a.menuOpen = !a.menuOpen;
             if (a.menuOpen) {
                 a.input.cancelCapture();
