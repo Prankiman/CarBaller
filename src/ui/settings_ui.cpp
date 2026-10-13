@@ -355,6 +355,13 @@ void drawBindingsTab(Settings& settings, InputSystem& input, bool& changed) {
             ImGui::PopID();
         }
 
+        // An unbound menu action still reads Esc (InputSystem::actionRaw), so
+        // say so rather than let the empty row look like the menu is gone.
+        if (row.empty() && a == Action::Pause) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(unbound - Esc still opens the menu)");
+        }
+
         // ---- binding buttons (next line)
         int removeSlot = -1;      // at most one of these fires per frame
         int recaptureSlot = -1;

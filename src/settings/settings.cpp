@@ -238,6 +238,11 @@ bool Settings::load(const std::string& path) {
             Action a = (Action)i;
             if (binds.binds.find(a) == binds.binds.end()) binds.binds[a] = def.get(a);
         }
+        // NB: an empty "Pause / Menu" list in the file is skipped above and so
+        // lands in the "missing from file" case - the default binds come back.
+        // (A file with no bindings block at all leaves every action unbound;
+        // InputSystem::actionRaw's Escape fallback is what keeps the menu
+        // reachable there, since the menu has no other way in.)
     }
 
     // Clamp everything to the ranges shown in the settings UI (RL ranges).

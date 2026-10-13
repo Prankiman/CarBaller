@@ -181,6 +181,18 @@ void InputSystem::rawParts(Action a, float& kb, float& ax) const {
 float InputSystem::actionRaw(Action a) const {
     float kb, ax;
     rawParts(a, kb, ax);
+
+    // Safety net for Pause/menu: an empty bind list would leave the player
+    // with no way to open the menu at all (they would have to quit and edit
+    // settings.json by hand), so an unbound Pause still reads Escape - the
+    // key the defaults use anyway. This is a *state* read, so it covers a
+    // bind cleared mid-session too, not just a bad file on disk. Capture
+    // cancels on Escape and swallows it (see handleEvent), so re-binding
+    // Pause to something else is never fought by this.
+    if (a == Action::Pause && binds_.get(a).empty() && keys_ &&
+        keysLen_ > SDL_SCANCODE_ESCAPE && keys_[SDL_SCANCODE_ESCAPE])
+        return 1.0f;
+
     return std::max(kb, ax);   // negatives (wrong-way stick) never count as held
 }
 
