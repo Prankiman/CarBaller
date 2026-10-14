@@ -7,6 +7,7 @@
 // downloaded_maps/ (see README section "Map loader").
 
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -139,7 +140,7 @@ struct Cursor {
     int32_t i32() {
         if (!need(4)) return 0;
         int32_t v;
-        __builtin_memcpy(&v, p + o, 4);
+        std::memcpy(&v, p + o, 4);
         o += 4;
         return v;
     }
@@ -147,7 +148,7 @@ struct Cursor {
     int16_t i16() {
         if (!need(2)) return 0;
         int16_t v;
-        __builtin_memcpy(&v, p + o, 2);
+        std::memcpy(&v, p + o, 2);
         o += 2;
         return v;
     }
@@ -159,14 +160,14 @@ struct Cursor {
     float f32() {
         if (!need(4)) return 0.f;
         float v;
-        __builtin_memcpy(&v, p + o, 4);
+        std::memcpy(&v, p + o, 4);
         o += 4;
         return v;
     }
     V3 f3() {
         V3 v(0, 0, 0);
         if (!need(12)) return v;
-        __builtin_memcpy(&v, p + o, 12);
+        std::memcpy(&v, p + o, 12);
         o += 12;
         return v;
     }
