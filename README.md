@@ -43,8 +43,18 @@ game.
   and scenery the real game renders but never blocks (signs, sky spheres)
   stays non-solid. Driving into a checkpoint's spawn
   marks it reached (a toast announces it) and Reset Shot sends car and ball
-  back there. Maps that ship no numbered spawn series of their own get their
-  checkpoints from the level's navigation points, so every map has some; each
+  back there.
+  Checkpoints come from the map's own course logic, read statically out of
+  its Kismet (never executed) — the workshop maps number their sections four
+  different ways and all of them are understood: `SpawnLevel` sequences that
+  bind a `PlayerSpawn`/`BallSpawn` pair per section, numbered
+  `PlayerSpawnN`/`BallSpawnN` variables bound to spawn actors, the
+  `CompareInt` dispatcher's ladder of `Teleport` destinations, and tagged
+  `PlayerSpawnNN` markers — all merged into one section ordering. Ops that
+  teleport the spawned ball attach its position to the section whose start it
+  sits at, so Reset Shot and checkpoint cycling put both car and ball where
+  the map intends. Maps that ship none of these get their checkpoints from
+  the level's navigation points, so every map has some; each
   spawn is then checked against the map's own collision and moved onto ground
   a car can actually stand on (points over nothing are dropped, near-duplicates
   collapse into one). The HUD marks every checkpoint of the route, picking out

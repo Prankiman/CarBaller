@@ -9,7 +9,9 @@
 #include <cstring>
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
 
+#include "map_kismet.h"
 #include "map_sessions.h"
 #include "ue3_bsp.h"
 #include "ue3_level.h"
@@ -527,7 +529,84 @@ bool loadMap(const std::string& path, MapData* out, std::string* err) {
         }
     }
 
-    if (!carSpawns.empty()) {
+    // ---- course checkpoints ---------------------------------------------
+    // The general rule the workshop maps share: the Kismet numbers the
+    // course sections, and each section names where the car (and usually
+    // the ball) belongs - SpawnLevel sequences, numbered PlayerSpawnN
+    // variables, or ladder teleports, whichever the map ships (see
+    // map_kismet.h). Tagged PlayerSpawnNN markers (Dribble Challenge's
+    // scheme, collected above) merge into the same numbering; a map with
+    // none of these falls back to its PathNodes.
+    std::vector<KismetCheckpoint> kcps;
+    int kismet = 0;
+    int kismetBalls = 0;
+    {
+        std::unordered_set<int> haveLevel;
+        kismet = kismetCheckpoints(pk, &kcps, nullptr);
+        for (const KismetCheckpoint& c : kcps)
+            if (c.hasBall) kismetBalls++;
+        for (const KismetCheckpoint& c : kcps)
+            if (c.level >= 1) haveLevel.insert(c.level);
+        for (const auto& kv : carSpawns) {
+            if (haveLevel.count(kv.first)) continue;  // the Kismet names it
+            KismetCheckpoint c;
+            c.car = kv.second.pos;
+            c.carYawRad = (float)ue3::unitsToRad(kv.second.yaw);
+            c.hasCar = true;
+            c.level = kv.first;
+            auto bi = ballSpawns.find(kv.first);
+            if (bi != ballSpawns.end()) {
+                c.ball = bi->second.pos;
+                c.hasBall = true;
+            }
+            kcps.push_back(c);
+        }
+        // Section number = course order; pairs no dispatcher named keep
+        // their package order at the end.
+        std::stable_sort(kcps.begin(), kcps.end(),
+                         [](const KismetCheckpoint& a, const KismetCheckpoint& b) {
+                             return (a.level >= 1 ? a.level : INT32_MAX) <
+                                    (b.level >= 1 ? b.level : INT32_MAX);
+                         });
+    }
+    bool hasCourse = false;
+    {
+        int seq = 0;
+        for (const KismetCheckpoint& c : kcps) {
+            if (!c.hasCar) continue;
+            MapSession s;
+            char buf[16];
+            if (c.level >= 1)
+                std::snprintf(buf, sizeof buf, "%02d", c.level);
+            else
+                std::snprintf(buf, sizeof buf, "K%02d", ++seq);
+            s.name = buf;
+            s.carPos = c.car;
+            s.carYawRad = c.carYawRad;
+            s.hasCar = true;
+            if (c.hasBall) {
+                s.ballPos = c.ball;
+                s.hasBall = true;
+            }
+            out->sessions.push_back(s);
+            hasCourse = true;
+            if (verbose)
+                std::fprintf(stderr,
+                             "[maploader] %s: course %s%s car=(%.0f,%.0f,%.0f) "
+                             "ball=(%.0f,%.0f,%.0f)%s\n",
+                             out->fileName.c_str(), s.name.c_str(),
+                             c.level >= 1 ? "" : " (unindexed)", s.carPos.x,
+                             s.carPos.y, s.carPos.z, s.ballPos.x, s.ballPos.y,
+                             s.ballPos.z, s.hasBall ? "" : " no-ball");
+        }
+    }
+    if (hasCourse) {
+        // Kismet PlayerSpawns are spawn actors too; the flag tells
+        // sanitizeSessions() this is the mapper's own course, not a derived
+        // route - its order and precision stay untouched.
+        out->stats.spawnActors += kismet;
+        out->stats.ballSpawns += kismetBalls;
+    } else if (!carSpawns.empty()) {
         for (const auto& kv : carSpawns) {
             MapSession s;
             char buf[16];
@@ -564,7 +643,7 @@ bool loadMap(const std::string& path, MapData* out, std::string* err) {
     // intended route, so on those maps they become checkpoints. They are raw
     // points here - placement on solid ground, ordering and reach radii are
     // sorted out by sanitizeSessions() once every session is known.
-    if (out->sessions.size() < 2 && !pathNodes.empty()) {
+    if (!hasCourse && out->sessions.size() < 2 && !pathNodes.empty()) {
         int n2 = 0;
         for (const Pending& pn : pathNodes) {
             MapSession s;
