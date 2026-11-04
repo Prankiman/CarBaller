@@ -42,6 +42,19 @@ constexpr float kFrameDt = 1.0f / 60.0f;
 
 float deg(float rad) { return rad * 57.2957795f; }
 
+// Keep the diagnostic thresholds independent of the shipped profile. The
+// probe measures camera mechanics, while the profile is intentionally tuned
+// to match the reference game's imported settings.
+CameraSettings probeSettings() {
+    CameraSettings cs;
+    cs.angle = -4.0f;
+    cs.stiffness = 0.5f;
+    cs.swivelSpeed = 5.0f;
+    cs.transitionSpeed = 1.2f;
+    cs.invertSwivel = false;
+    return cs;
+}
+
 // Shortest signed difference between two angles, in rad.
 float wrap(float a) {
     while (a > (float)M_PI) a -= 2 * (float)M_PI;
@@ -153,7 +166,7 @@ const Case kCases[] = {
 };
 
 Metrics run(const Case& c) {
-    CameraSettings cs;  // shipped defaults
+    CameraSettings cs = probeSettings();
     RLCamera cam;
     cam.reset(c.at(0), cs);
     cam.setMode(CamMode::Ball);
@@ -216,7 +229,7 @@ bool checkSwivelPivot() {
     bool ok = true;
     std::printf("\n=== car-cam swivel pivot (eye travels, car stays put) ===\n");
     for (const Swivel& v : kSwivels) {
-        CameraSettings cs;  // shipped defaults
+        CameraSettings cs = probeSettings();
         RLCamera cam;
         SimSnapshot s = makeSnap(V3(0, 0, v.carZ), V3(1, 0, 0),
                                  V3(0, 0, v.carZ));
@@ -337,7 +350,7 @@ bool checkAirCamera() {
     bool ok = true;
     std::printf("\n=== car-cam air camera (velocity based, stiffness eased) ===\n");
     for (const Air& c : kAir) {
-        CameraSettings cs;  // shipped defaults
+        CameraSettings cs = probeSettings();
         RLCamera cam;
         const SimSnapshot s0 = airAt(0, c);
         cam.setMode(CamMode::Car);
@@ -413,7 +426,7 @@ bool checkGroundHeal() {
         ground = (t >= 1.5f);
     };
 
-    CameraSettings cs;
+    CameraSettings cs = probeSettings();
     RLCamera cam;
     float yaw = 0, pitch = 0;
     bool ground = false;

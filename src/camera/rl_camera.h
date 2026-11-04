@@ -63,6 +63,7 @@ private:
     // reaches the view as a plain tilt.
     float yawOff_ = 0;
     float pitchOff_ = 0;
+    float ballOrbitAim_ = 0;      // 1 while manually orbiting, eased back to ball aim
     float swivelIdle_ = 0;       // seconds since the last swivel input
 
     // Car-cam heading: the axis the camera sits behind. On the ground it is

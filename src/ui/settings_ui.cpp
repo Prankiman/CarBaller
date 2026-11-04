@@ -189,11 +189,11 @@ void drawCameraTab(CameraSettings& c, bool& changed, bool& entryOpen) {
     sliderF("Height", &c.height, 40.0f, 200.0f, "%.0f", changed, entryOpen,
             "How high above the car the camera floats. Rocket League: 40 - 200 (default 100).");
     sliderF("Angle", &c.angle, -45.0f, 0.0f, "%.0f", changed, entryOpen,
-            "Camera pitch relative to the car; negative looks down. Rocket League: -45 - 0 (default -4).");
+            "Camera pitch relative to the car; negative looks down. Rocket League: -45 - 0 (reference default -5).");
     sliderF("Distance", &c.distance, 100.0f, 400.0f, "%.0f", changed, entryOpen,
             "How far the camera sits behind the car. Rocket League: 100 - 400 (default 270).");
     sliderF("Stiffness", &c.stiffness, 0.0f, 1.0f, "%.2f", changed, entryOpen,
-            "How rigidly the camera follows the car. Higher = tighter, lower = floatier. Rocket League: 0 - 1 (default 0.50).");
+            "How rigidly the camera follows the car. Higher = tighter, lower = floatier. Rocket League: 0 - 1 (reference default 0.40).");
     sliderF("Swivel Speed", &c.swivelSpeed, 1.0f, 10.0f, "%.1f", changed, entryOpen,
             "How fast the camera swivels when you look around. Rocket League: 1 - 10.");
     sliderF("Transition Speed", &c.transitionSpeed, 1.0f, 2.0f, "%.2f", changed, entryOpen,

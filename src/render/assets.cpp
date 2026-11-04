@@ -377,13 +377,11 @@ void appendStl(const std::vector<float>& tris, MeshBuilder& mb,
 
 // Scale + placement against the real Octane hitbox (RocketSim config: 120.51
 // long, front plane x=74.13, rear plane x=-46.38, top z=40.09 in car space).
-// FK is chosen so the roof ends just under the hitbox top ("hitbox barely
-// taller than the Fennec"); the body is then placed tail-out: FBACK puts the
-// rear ~26.6uu behind the box rear so the TAIL is what pokes out, with the
-// nose just inside the front plane (the model is longer than the hitbox, so
-// the overhang all goes to the back).
-constexpr float FK = 1.32f;       // model units -> car units (110.9 -> 146.4)
-constexpr float FBACK = -73.0f;   // rear-most body point (tail pokes out)
+// The real Fennec body sits noticeably inside the Octane hitbox. Keep the
+// nose near the hitbox front while leaving a modest tail overhang, rather than
+// making the rendered body fill the collision box.
+constexpr float FK = 1.18f;       // model units -> car units (110.9 -> 130.9)
+constexpr float FBACK = -55.0f;   // rear-most body point (tail pokes out)
 constexpr float FGX = -12.01f;    // model body center (x, width axis)
 constexpr float FGY = -36.4f;     // model rear-most point (y, length axis)
 constexpr float CAR_GROUND = -17.0f;  // wheel contact plane in car space
@@ -423,10 +421,15 @@ bool buildFennecWheels(MeshBuilder& front, MeshBuilder& back,
 
     const float rF = 19.5f / 2 * FK, rR = 22.0f / 2 * FK;
     const float lat = 26.2f;
-    // Arch centers measured from the body STL's wheel openings, re-mapped
-    // through fennecBodyXf at the current FK/FBACK (1.082/-46 -> 1.32/-73).
-    const V3 mF(43.6f, 0, CAR_GROUND + rF);
-    const V3 mR(-46.0f, 0, CAR_GROUND + rR);
+    // The body arches are centered at model X=51.25 (front) and -33.75
+    // (rear). Re-map those centers with the same transform as the body so
+    // resizing/repositioning the shell cannot leave the wheels behind.
+    const float frontX = (51.25f - FGY) * FK + FBACK;
+    // The rear arch center is at model Y=-15.95 (the old calibration's
+    // -46uu mount maps back to this STL coordinate).
+    const float rearX = (-15.95f - FGY) * FK + FBACK;
+    const V3 mF(frontX, 0, CAR_GROUND + rF);
+    const V3 mR(rearX, 0, CAR_GROUND + rR);
     const float cFx = -92.99f, cFy = 42.35f;   // print-layout centers
     const float cRx = -84.9f, cRy = -3.99f;
 

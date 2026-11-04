@@ -12,6 +12,7 @@ void RLCamera::reset(const SimSnapshot& s, const CameraSettings& cs) {
     // survives respawns/position presets (RL never flips the mode for you),
     // and before the first input this starts in ball cam like RL does.
     yawOff_ = pitchOff_ = 0;
+    ballOrbitAim_ = 0;
     swivelIdle_ = 0;
     carYaw_ = std::atan2(s.carF.y, s.carF.x);
     axisYaw_ = carYaw_;       // facing axis starts on the nose bearing
@@ -191,10 +192,27 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
     if (first) ballPitch_ = measPitch;
     else ballPitch_ += clampf(measPitch - ballPitch_, -slewStep, slewStep);
 
-    float pitch = clampf(ballPitch_ + cs.angle * (float)M_PI / 180.0f + tilt,
-                         -1.4f, 1.4f);
+    const float ballPitch = clampf(ballPitch_ + cs.angle * (float)M_PI / 180.0f + tilt,
+                                   -1.4f, 1.4f);
+    V3 ballDir = dirFromYawPitch(lookYaw, ballPitch);
 
-    V3 dir = dirFromYawPitch(lookYaw, pitch);
+    // Ball cam's resting aim is the ball, but manual swivel must still orbit
+    // the car. A ball-derived pitch leaves the car off-axis as soon as the
+    // eye moves around it, which makes the camera appear to rotate in place.
+    // Blend toward the same car-anchored aim used by car cam only while a
+    // meaningful swivel offset is present, preserving the existing ball lock
+    // with no stick input.
+    if (ballOrbitAim_ > 0.0f) {
+        const V3 carAim = s.carPos + V3(0, 0, cs.height * 0.25f);
+        const V3 toCar = carAim - outEye;
+        const float carBasePitch = std::atan2(toCar.z, std::max(toCar.len2d(), 1.0f));
+        const float carPitch = clampf(
+            carBasePitch + cs.angle * (float)M_PI / 180.0f + tilt, -1.4f, 1.4f);
+        const V3 carDir = dirFromYawPitch(lookYaw, carPitch);
+        ballDir = V3::lerp(ballDir, carDir, ballOrbitAim_).norm();
+    }
+
+    V3 dir = ballDir;
     outTarget = outEye + dir * std::max(toT.len(), 1000.0f);
 }
 
@@ -407,6 +425,17 @@ void RLCamera::update(float dt, const CameraSettings& cs, const SimSnapshot& s,
         yawOff_ -= clampf(yawOff_, -snapStep, snapStep);
         pitchOff_ -= clampf(pitchOff_, -snapStep, snapStep);
     }
+
+    // Keep ball cam in its car-anchored orbit state briefly while the
+    // snap-back is underway. Decaying this state independently of the raw
+    // offsets prevents the aim from switching back to the ball in one frame
+    // when the offsets reach zero.
+    const bool manualSwivel = std::fabs(swivelX) > 0.004f ||
+                              std::fabs(swivelY) > 0.004f;
+    const float orbitRate = manualSwivel ? 14.0f : 5.0f;
+    const float orbitTarget = manualSwivel ? 1.0f : 0.0f;
+    ballOrbitAim_ += (orbitTarget - ballOrbitAim_) *
+                     (1.0f - std::exp(-orbitRate * dt));
 
     // ---- mode transition
     float targetBlend = (desired_ == CamMode::Ball) ? 1.0f : 0.0f;

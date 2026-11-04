@@ -64,12 +64,12 @@ struct CameraSettings {
     float fov = 110.0f;            // 60..110 (RL), horizontal FOV
     float distance = 270.0f;       // 100..400 (RL; 270 = v1.74 default)
     float height = 100.0f;         // 40..200 (RL)
-    float angle = -4.0f;           // -45..0 (RL; negative looks down)
-    float stiffness = 0.5f;        // 0..1 (RL; 0.5 = v1.74 default)
-    float swivelSpeed = 5.0f;      // 1..10 (RL)
-    float transitionSpeed = 1.2f;  // 1..2 (RL)
-    bool shake = true;             // RL ships with camera shake ON
-    bool invertSwivel = false;
+    float angle = -5.0f;           // -45..0 (reference profile default)
+    float stiffness = 0.4f;        // 0..1 (reference profile default)
+    float swivelSpeed = 10.0f;     // 1..10 (reference profile default)
+    float transitionSpeed = 1.5f;  // 1..2 (reference profile default)
+    bool shake = false;            // reference profile default
+    bool invertSwivel = true;      // reference profile default
     bool snap = true;              // "Snap Camera to Default" after swivel idle
     bool ballCamToggle = true;     // true=toggle, false=hold ("Hold Ball Camera")
     bool ballCamIndicator = true;
