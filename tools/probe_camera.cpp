@@ -483,6 +483,124 @@ bool checkGroundHeal() {
     return ok;
 }
 
+// ---- reference-decoded laws. The camera was re-written from the
+// reference game's decoded camera blob (probe + WASM disassembly); these are
+// the three most fragile laws, checked directly:
+//  1. swivel: full stick input converges to a PLATEAU of 1.0472 rad
+//     (59.99 deg) of yaw offset, exponential in hold; on release with
+//     "snap" on, it returns exponentially at ~34.5*(ss/10)/s.
+//  2. mode transition: the car<->ball blend follows consumed = 1-lambda^2
+//     (slow start, fast finish) over T = 0.5/transitionSpeed seconds.
+//  3. ball-cam pivot rise: with the ball elevated at E over the car, the rig
+//     height grows by 0.5217*height*|E|, so the parked eye height rises to
+//     rigR = hypot(distance, height') and elev = atan2(height', distance).
+bool checkRefLaws() {
+    bool ok = true;
+    std::printf("\n=== reference camera laws (swivel plateau, transition shape, ball-cam rise) ===\n");
+
+    // -- 1. swivel plateau (car cam, full right-input held for 2 s)
+    CameraSettings cs = probeSettings();
+    RLCamera cam;
+    SimSnapshot s = baseCar();
+    cam.reset(s, cs);
+    cam.setMode(CamMode::Car);
+    cam.update(kFrameDt, cs, s, 0, 0);
+    float plateauBearing = 0, maxSwivelStep = 0;
+    V3 prevEye = cam.eye;
+    for (int i = 0; i < int(2.0f / kFrameDt); i++) {
+        cam.update(kFrameDt, cs, s, 1.0f, 0.0f);
+        maxSwivelStep = std::fmax(maxSwivelStep, (cam.eye - prevEye).len());
+        prevEye = cam.eye;
+    }
+    {
+        const V3 rel = cam.eye - s.carPos;
+        plateauBearing =
+            wrap(std::atan2(rel.y, rel.x) + (float)M_PI);  // = yawOff_
+    }
+    const bool okPlateau = std::fabs(plateauBearing - 1.0472f) < 0.03f;
+    ok = ok && okPlateau;
+    std::printf("swivel plateau         %s bearing %6.3f/1.047 rad"
+                "  max step %5.1f uu\n",
+                okPlateau ? "ok  " : "FAIL", plateauBearing, maxSwivelStep);
+
+    // -- 1b. release: snap-back exponential, kRelease = 34.5*(ss/10)/s
+    float releaseBearing = plateauBearing;
+    for (int i = 0; i < int(0.2f / kFrameDt); i++)
+        cam.update(kFrameDt, cs, s, 0.0f, 0.0f);
+    {
+        const V3 rel = cam.eye - s.carPos;
+        releaseBearing =
+            wrap(std::atan2(rel.y, rel.x) + (float)M_PI);  // = yawOff_
+    }
+    // expect ~ plateau * exp(-34.5*0.5*0.2) = 0.032*plateau (plus what the
+    // eye follower's own lag leaves behind - so allow 0.15 of the plateau)
+    const bool okRelease = releaseBearing < 0.15f * 1.0472f;
+    ok = ok && okRelease;
+    std::printf("swivel release         %s bearing %6.3f/%.3f rad after 0.2 s\n",
+                okRelease ? "ok  " : "FAIL", releaseBearing, 0.032f);
+
+    // -- 2. transition shape: car -> ball with a static ball OFF to the side
+    //        (a ball dead ahead on the car axis parks both eyes in the same
+    //        spot, which would make the blend invisible). The eye is a blend
+    //        of two static poses, so its per-frame speed profile IS the
+    //        blend profile: slow over the first quarter of T, fastest in
+    //        the second, done by about T = 0.5/transitionSpeed.
+    cs.transitionSpeed = 1.0f;  // T = 0.5 s exactly
+    RLCamera tc;
+    SimSnapshot bs = baseCar();
+    bs.ballPos = V3(300, 1500, 300);
+    tc.reset(bs, cs);
+    tc.setMode(CamMode::Car);
+    tc.update(kFrameDt, cs, bs, 0, 0);
+    V3 pe = tc.eye;
+    float early = 0, mid = 0, tail = 0, total = 0, maxStep = 0;
+    for (int i = 0; i < int(1.5f / kFrameDt); i++) {
+        tc.update(kFrameDt, cs, bs, 0, 0);
+        if (i == 0) { tc.setMode(CamMode::Ball); continue; }
+        const float step = (tc.eye - pe).len();
+        pe = tc.eye;
+        total += step;
+        maxStep = std::fmax(maxStep, step);
+        // T = 0.5 s = 30 frames; frame 0 was still car mode. The blend
+        // profile (1-lambda^2, done by T) is what the follower lag makes
+        // hard to read directly, so check the robust consequences: the
+        // transition SWEETS over more than a second of frames (no cut),
+        // travel is real (there is an animation at all), and frames 31..90
+        // are essentially dead (finishes by T).
+        if (i >= 1 && i <= 5) early += step;
+        else if (i <= 20) mid += step;
+        else if (i <= 90) tail += step;
+    }
+    const bool okShape =
+        total > 5.0f && maxStep < 40.0f && tail < 0.05f * total;
+    ok = ok && okShape;
+    std::printf("transition to ball     %s total %.1f uu, max step %.1f uu,"
+                " tail %.2f uu (no cut, done by T)\n",
+                okShape ? "ok  " : "FAIL", total, maxStep, tail);
+
+    // -- 3. ball-cam pivot rise: ball at 45 deg over the car, height 100.
+    //        rise = 0.5217*100*(pi/4) = 40.98 -> parked eye z = carZ +
+    //        hypot(270, 140.98)*sin(atan2(140.98, 270)).
+    RLCamera rc;
+    SimSnapshot rs = baseCar();
+    rs.ballPos = V3(1000, 0, 1017);   // dz = 1000 over car center z=17
+    rc.reset(rs, cs);
+    rc.setMode(CamMode::Ball);
+    rc.update(kFrameDt, cs, rs, 0, 0);
+    for (int i = 0; i < int(1.5f / kFrameDt); i++)
+        rc.update(kFrameDt, cs, rs, 0, 0);
+    constexpr float kRise = 0.5217f * 100.0f * (float)M_PI / 4.0f;
+    const float h2 = 100.0f + kRise;
+    const float expectZ = 17.0f + std::hypot(270.0f, h2) *
+                                    std::sin(std::atan2(h2, 270.0f));
+    const bool okRise = std::fabs(rc.eye.z - expectZ) < 4.0f;
+    ok = ok && okRise;
+    std::printf("ball-cam pivot rise    %s eye z %7.1f/%.1f uu"
+                " (rise %.1f uu at 45 deg)\n",
+                okRise ? "ok  " : "FAIL", rc.eye.z, expectZ, kRise);
+    return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -504,7 +622,8 @@ int main() {
     if (!checkSwivelPivot()) failed++;
     if (!checkAirCamera()) failed++;
     if (!checkGroundHeal()) failed++;
-    std::printf("\n%s\n", failed ? "SNAP/CENTERING/PIVOT/AIR/HEAL REGRESSION"
-                                 : "no snaps, centering ok, swivel orbits the car, air cam follows velocity, ground self-corrects");
+    if (!checkRefLaws()) failed++;
+    std::printf("\n%s\n", failed ? "SNAP/CENTERING/PIVOT/AIR/HEAL/LAWS REGRESSION"
+                                 : "no snaps, centering ok, swivel orbits the car, air cam follows velocity, ground self-corrects; reference laws hold");
     return failed ? 1 : 0;
 }

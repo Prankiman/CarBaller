@@ -101,12 +101,19 @@ static constexpr float kBallAimSlew = 20.0f;
 // tilt, smoothly and without a jump.
 static constexpr float kEyeFloorZ = 16.0f;      // uu: eye stays above the arena floor
 static constexpr float kCarRideHeight = 17.0f;  // car center above the surface it sits on
-static constexpr float kMaxElev = 1.5f;         // rad: keep the eye behind the car (cos > 0)
+static constexpr float kMaxElev = 1.48353f; // rad (85 deg, reference eye-pitch limit): keep the eye behind the car (cos > 0)
 
 void RLCamera::placeEye(const CameraSettings& cs, const SimSnapshot& s,
-                        float lookYaw, V3& outEye, float& outTilt) const {
-    const float rigR = std::hypot(cs.distance, cs.height);
-    const float e0 = std::atan2(cs.height, cs.distance);
+                        float lookYaw, V3& outEye, float& outTilt,
+                        float heightRise) const {
+    // heightRise: reference-decoded ball-cam law — while the ball is
+    // elevated over the car, the rig's pivot sits ABOVE the car center:
+    // rise = 0.5217 * height * |elevation of the ball over the car|. It
+    // steepens the rig's own parked pitch (and lifts its eye) without
+    // touching the car cam, where the rise is absent.
+    const float h = cs.height + heightRise;
+    const float rigR = std::hypot(cs.distance, h);
+    const float e0 = std::atan2(h, cs.distance);
 
     float elev = e0 - pitchOff_;
 
@@ -181,7 +188,13 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
 
     float lookYaw = ballYaw_ + yawOff_;
     float tilt;      // pitch swivel the orbit could not absorb (see placeEye)
-    placeEye(cs, s, lookYaw, outEye, tilt);
+    // Reference law: the rig pivot rises above the car center by
+    // 0.5217 * height * |ball elevation over the car| (see placeEye). The
+    // car cam passes no rise (none in the reference car-cam path).
+    const float toBallHoriz = std::max(toBall.len2d(), 1.0f);
+    const float ballElev = std::atan2(toBall.z, toBallHoriz);
+    const float rise = 0.5217f * cs.height * std::fabs(ballElev);
+    placeEye(cs, s, lookYaw, outEye, tilt, rise);
 
     // ---- vertical aim: same treatment, minus the branch (the elevation of
     // a point above the horizon plane is single-valued). What this buys is
@@ -193,7 +206,7 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
     else ballPitch_ += clampf(measPitch - ballPitch_, -slewStep, slewStep);
 
     const float ballPitch = clampf(ballPitch_ + cs.angle * (float)M_PI / 180.0f + tilt,
-                                   -1.4f, 1.4f);
+                                   -kMaxElev, kMaxElev);
     V3 ballDir = dirFromYawPitch(lookYaw, ballPitch);
 
     // Ball cam's resting aim is the ball, but manual swivel must still orbit
@@ -207,7 +220,8 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
         const V3 toCar = carAim - outEye;
         const float carBasePitch = std::atan2(toCar.z, std::max(toCar.len2d(), 1.0f));
         const float carPitch = clampf(
-            carBasePitch + cs.angle * (float)M_PI / 180.0f + tilt, -1.4f, 1.4f);
+            carBasePitch + cs.angle * (float)M_PI / 180.0f + tilt,
+            -kMaxElev, kMaxElev);
         const V3 carDir = dirFromYawPitch(lookYaw, carPitch);
         ballDir = V3::lerp(ballDir, carDir, ballOrbitAim_).norm();
     }
@@ -393,7 +407,7 @@ void RLCamera::computeCarCam(const CameraSettings& cs, const SimSnapshot& s,
     V3 toT = aim - outEye;
     float basePitch = std::atan2(toT.z, std::max(toT.len2d(), 1.0f));
     float pitch = clampf(basePitch + cs.angle * (float)M_PI / 180.0f + tilt,
-                         -1.4f, 1.4f);
+                         -kMaxElev, kMaxElev);
 
     V3 dir = dirFromYawPitch(lookYaw, pitch);
     outTarget = outEye + dir * std::max(toT.len(), 1000.0f);
@@ -401,48 +415,69 @@ void RLCamera::computeCarCam(const CameraSettings& cs, const SimSnapshot& s,
 
 void RLCamera::update(float dt, const CameraSettings& cs, const SimSnapshot& s,
                       float swivelX, float swivelY) {
-    // ---- swivel (persistent offsets)
-    float rate = cs.swivelSpeed * 0.7f;  // rad/s at full stick (5 -> 3.5 rad/s)
-    float invert = cs.invertSwivel ? -1.0f : 1.0f;
-    yawOff_ += swivelX * rate * dt;
-    pitchOff_ += swivelY * rate * dt * invert;
+    // ---- swivel (persistent offsets) - reference-decoded law:
+    // holding a stick input sways the camera out to a PLATEAU of
+    // 1.0472|input| rad (= 59.99 deg, measured ±59.94 deg): the plateau is
+    // ~linear in the input magnitude and independent of swivelSpeed.
+    // It is approached exponentially at kHold ≈ 10.5·(ss/10)/s;
+    // releasing (Snap Camera to Default) returns exponentially at
+    // kRelease ≈ 34.5·(ss/10)/s (measured ss=10, dt=1/120).
+    static constexpr float kSwivelPlateau = 1.0472f; // rad per full input
+    const float invert = cs.invertSwivel ? -1.0f : 1.0f;
+    const float sw = cs.swivelSpeed / 10.0f;
+    const bool manual = std::fabs(swivelX) > 0.004f ||
+                        std::fabs(swivelY) > 0.004f;
+    if (manual) swivelIdle_ = 0;
+    else swivelIdle_ += dt;
+    const float kHold = 10.5f * sw;
+    const float kRelease = 34.5f * sw;
+    const float kNow = manual ? kHold : kRelease;
+    const float yawTarget = manual ? kSwivelPlateau * swivelX : 0.0f;
+    const float pitchTarget =
+        manual ? kSwivelPlateau * swivelY * invert : 0.0f;
+    const float kExp = 1.0f - std::exp(-kNow * dt);
+    if (manual || (cs.snap && swivelIdle_ > 0.05f)) {
+        yawOff_ += (yawTarget - yawOff_) * kExp;
+        pitchOff_ += (pitchTarget - pitchOff_) * kExp;
+    }
     if (yawOff_ > (float)M_PI) yawOff_ -= 2 * (float)M_PI;
     if (yawOff_ < -(float)M_PI) yawOff_ += 2 * (float)M_PI;
     pitchOff_ = clampf(pitchOff_, -0.8f, 0.7f);
-
-    // ---- snap camera to default: once the swivel goes idle, ease the manual
-    // offsets back to zero at full swivel rate (Rocket League's
-    // "Snap Camera to Default"). Tiny inputs count as idle so stick noise
-    // can't hold the offset off-center.
-    if (std::fabs(swivelX) > 0.004f || std::fabs(swivelY) > 0.004f)
-        swivelIdle_ = 0;
-    else
-        swivelIdle_ += dt;
-    if (cs.snap && swivelIdle_ > 0.05f) {
-        // RL snaps back quickly right after release: near-immediate start,
-        // return rate = 2x swivel speed with a fast floor (6 rad/s).
-        const float snapStep = std::fmax(rate * 2.0f, 6.0f) * dt;
-        yawOff_ -= clampf(yawOff_, -snapStep, snapStep);
-        pitchOff_ -= clampf(pitchOff_, -snapStep, snapStep);
-    }
 
     // Keep ball cam in its car-anchored orbit state briefly while the
     // snap-back is underway. Decaying this state independently of the raw
     // offsets prevents the aim from switching back to the ball in one frame
     // when the offsets reach zero.
-    const bool manualSwivel = std::fabs(swivelX) > 0.004f ||
-                              std::fabs(swivelY) > 0.004f;
+    const bool manualSwivel = manual;
     const float orbitRate = manualSwivel ? 14.0f : 5.0f;
     const float orbitTarget = manualSwivel ? 1.0f : 0.0f;
     ballOrbitAim_ += (orbitTarget - ballOrbitAim_) *
                      (1.0f - std::exp(-orbitRate * dt));
 
-    // ---- mode transition
+    // ---- mode transition (reference-decoded law: consumed = 1 - lambda^2
+    // with lambda = 1 - t/T, T = 0.5/clamp(transitionSpeed, 0.1, 10) s —
+    // slow start, fast finish; the seconds-scale setting owns the duration).
+    // A half-finished transition that gets reversed restarts from the
+    // current blend (RL re-engages the capture, it does not rewind).
     float targetBlend = (desired_ == CamMode::Ball) ? 1.0f : 0.0f;
-    float tRate = 0.5f + cs.transitionSpeed * 2.5f;
-    float step = tRate * dt;
-    if (blend_ < targetBlend) blend_ = std::min(targetBlend, blend_ + step);
-    else if (blend_ > targetBlend) blend_ = std::max(targetBlend, blend_ - step);
+    if (std::fabs(targetBlend - blend_) <= 1e-6f) {
+        transT_ = -1.0f;
+    } else {
+        const bool reversed = transT_ >= 0.0f &&
+                              ((targetBlend - startBlend_) * (targetBlend - blend_)) < 0.0f;
+        if (transT_ < 0.0f || reversed) {
+            transT_ = 0.0f;
+            startBlend_ = blend_;
+        }
+        transT_ += dt;
+        const float T = 0.5f / clampf(cs.transitionSpeed, 0.1f, 10.0f);
+        const float lam = clampf(1.0f - transT_ / T, 0.0f, 1.0f);
+        blend_ = startBlend_ + (targetBlend - startBlend_) * (1.0f - lam * lam);
+        if (lam <= 0.0f) {
+            blend_ = targetBlend;
+            transT_ = -1.0f;
+        }
+    }
 
     // ---- compute both rigs
     V3 ballEye, ballTarget, carEye, carTarget;

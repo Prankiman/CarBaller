@@ -41,10 +41,16 @@ private:
     // back the part of the pitch swivel the orbit could not absorb - the
     // caller adds that to the view pitch instead of pitchOff_.
     void placeEye(const CameraSettings& cs, const SimSnapshot& s,
-                  float lookYaw, V3& outEye, float& outTilt) const;
+                  float lookYaw, V3& outEye, float& outTilt,
+                  float heightRise = 0.0f) const;
 
     CamMode desired_ = CamMode::Ball;
     float blend_ = 1.0f;        // 0 = car cam, 1 = ball cam
+    // Mode-toggle transition, decoded from the reference (probe + WAT):
+    // consumed(t) = 1 - lambda^2 with lambda = 1 - t/T (slow start, fast
+    // finish), T = 0.5 / clamp(transitionSpeed, 0.1, 10). transT_ < 0 = idle.
+    float transT_ = -1.0f;
+    float startBlend_ = 1.0f;   // blend where the current transition began
 
     // Ball-cam aim: the rig's own yaw/pitch, before the swivel offsets are
     // added. These are slewed (see kBallAimSlew) instead of read straight
