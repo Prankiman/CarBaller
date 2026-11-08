@@ -5,7 +5,10 @@
 // It also checks the car cam's swivel PIVOT: up/down has to rotate the rig
 // around the car (eye moves, car holds its place on screen) the way left/right
 // does, not tilt the view from a fixed eye, and the swinging eye must never
-// drop through the floor.
+// drop through the floor. Note the car HOLDS A PLACE that is not the screen
+// centre: the parked view is level (reference applied-pitch law - elevation
+// of the look-dir + Camera Angle), which leaves the car resting ~15-18 deg
+// below the axis, so the check is that the offset stays constant, not zero.
 //
 // And the car cam's AIR CAMERA: in the air the camera sits behind the
 // direction of TRAVEL (not behind the nose) and eases onto it, re-read every
@@ -223,7 +226,14 @@ const Swivel kSwivels[] = {
 bool checkSwivelPivot() {
     constexpr float kWindow = 0.10f;  // s: pitchOff is still fully inside the
                                       // orbit range at default settings
-    constexpr float kMaxOff = 8.0f;   // deg the car may drift off the view axis
+    constexpr float kLateA = 0.35f;   // s - the swivel is near its plateau
+    constexpr float kLateB = 0.50f;   // s - the composition law is steady here
+    constexpr float kMaxLateDrift = 2.0f; // deg - the composition law must be
+                     // CONSTANT once the orbit is under way (pinning law)
+    constexpr float kMaxTransient = 12.0f; // deg - the eye/apply followers
+                     // trade some transient pinning for their anti-jump
+                     // protections (the reference applies swivel offsets
+                     // laglessly; ours keeps the protections).
     constexpr float kMinEyeZ = 15.5f; // uu: never through the arena floor
 
     bool ok = true;
@@ -239,10 +249,13 @@ bool checkSwivelPivot() {
         cam.update(kFrameDt, cs, s, 0, 0);
         const float startZ = cam.eye.z;
 
-        float travel = 0, maxOff = 0, minZ = cam.eye.z;
+        float travel = 0, drift = 0, off0 = 0, offLate = -1e9f, offLate2 = -1e9f;
+        float minZ = cam.eye.z;
+        bool first = true;
         for (int i = 0; i < int(1.0f / kFrameDt); i++) {
             cam.update(kFrameDt, cs, s, 0, v.swY);
-            if (i * kFrameDt < kWindow) travel = std::fabs(cam.eye.z - startZ);
+            const float t = i * kFrameDt;
+            if (t < kWindow) travel = std::fabs(cam.eye.z - startZ);
 
             const V3 toCar = s.carPos - cam.eye;
             const V3 dir = (cam.target - cam.eye).norm();
@@ -250,19 +263,37 @@ bool checkSwivelPivot() {
             const float elevCar = std::atan2(toCar.z, horiz);
             const float elevView = std::atan2(dir.z,
                                               std::sqrt(dir.x * dir.x + dir.y * dir.y));
-            if (i * kFrameDt < kWindow)
-                maxOff = std::fmax(maxOff, std::fabs(elevCar - elevView) * 57.2957795f);
+            if (t < kWindow) {
+                const float off = std::fabs(elevCar - elevView) * 57.2957795f;
+                if (first) { off0 = off; first = false; }
+                else drift = std::fmax(drift, std::fabs(off - off0));
+            }
+            if (t >= kLateA && t < kLateA + 2 * kFrameDt && offLate < -1e8f)
+                offLate = elevCar - elevView;
+            if (t >= kLateB && t < kLateB + 2 * kFrameDt && offLate2 < -1e8f)
+                offLate2 = elevCar - elevView;
             minZ = std::fmin(minZ, cam.eye.z);
         }
+        const float lateDrift =
+            std::fabs((offLate2 - offLate) * 57.2957795f);
 
         const bool okTravel = travel >= v.minTravel;
-        const bool okCenter = maxOff <= kMaxOff;
+        // Pinning now means the car holds its (off-centre) composition spot
+        // while the eye swings - not that it sits centred: with the level
+        // parked pitch (reference law) the car rests ~15-18 deg below the
+        // axis the whole time, and the swivel's eye-orbit + pitch co-motion
+        // keeps that constant (drift, not absolute offset, is the failure
+        // mode the probe is after).
+        const bool okLate = lateDrift <= kMaxLateDrift;
+        const bool okTransient = drift <= kMaxTransient;
         const bool okFloor = minZ >= kMinEyeZ;
-        if (!(okTravel && okCenter && okFloor)) ok = false;
-        std::printf("%-14s %s travel %5.1f/%3.0f uu  car off-axis %4.1f/%2.0f deg"
-                    "  eye min z %6.1f uu\n",
-                    v.name, (okTravel && okCenter && okFloor) ? "ok  " : "FAIL",
-                    travel, v.minTravel, maxOff, kMaxOff, minZ);
+        if (!(okTravel && okLate && okTransient && okFloor)) ok = false;
+        std::printf("%-14s %s travel %5.1f/%3.0f uu  off %5.1f (late %.1f/%.0f,"
+                    " transient %4.1f/%.0f)  eye min z %6.1f uu\n",
+                    v.name, (okTravel && okLate && okTransient && okFloor)
+                                ? "ok  " : "FAIL",
+                    travel, v.minTravel, off0, lateDrift, kMaxLateDrift,
+                    drift, kMaxTransient, minZ);
     }
     return ok;
 }

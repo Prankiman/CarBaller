@@ -97,7 +97,6 @@ private:
                                  // swivel's own vertical motion off from the
                                  // car's (the latter keeps the stiffness lag)
     bool hasSmoothed_ = false;
-
     // One-euro filtered look-at point: the aim follows a resting/bouncing
     // ball's contact micro-chatter only weakly (low cutoff), while real fast
     // motion (swivels, flicks, camera swings) passes through with ~1-3 deg lag.
