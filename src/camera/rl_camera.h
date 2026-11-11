@@ -103,9 +103,8 @@ private:
     bool hasAxisYaw_ = false;    // axisYaw_ holds a real bearing
     V3 smoothedEye_{0, 0, 0};
     V3 prevWantEye_{0, 0, 0};    // previous ideal eye, for rig speed
-    float prevRigOffZ_ = 0;      // previous rig-relative eye height: splits the
-                                 // swivel's own vertical motion off from the
-                                 // car's (the latter keeps the stiffness lag)
+    float prevRigOffZ_ = 0;      // previous rig-relative eye height: the
+                                 // rig-offset vertical rate term
     bool hasSmoothed_ = false;
     // One-euro filtered look-at point: the aim follows a resting/bouncing
     // ball's contact micro-chatter only weakly (low cutoff), while real fast

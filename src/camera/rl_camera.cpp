@@ -636,12 +636,25 @@ void RLCamera::update(float dt, const CameraSettings& cs, const SimSnapshot& s,
     const float dx = wantEye.x - prevWantEye_.x;
     const float dy = wantEye.y - prevWantEye_.y;
     const float rigSpeed2d = std::sqrt(dx * dx + dy * dy) / std::max(dt, 1e-4f);
-    const float rateX = followRate + rigSpeed2d / kRigLagCap;
-    prevWantEye_ = wantEye;
+    const float carVz = s.carVel.z;
     const float rigOffZ = wantEye.z - s.carPos.z;
     const float rigVz = (rigOffZ - prevRigOffZ_) / std::max(dt, 1e-4f);
     prevRigOffZ_ = rigOffZ;
-    const float rateZ = baseRateZ + std::fabs(rigVz) / kRigLagCap;
+    prevWantEye_ = wantEye;
+    const float rateX = followRate + rigSpeed2d / kRigLagCap;
+    // Vertical follow needs BOTH rates: the CAR's vertical speed (in a pure
+    // fall the rig offset is constant, so the rig-offset rate reads ~0 while
+    // the eye target plummets at 2300 uu/s - the follower settled
+    // v/baseRate behind and the car slid out the bottom of the frame,
+    // measured off-axis 175 deg vs the reference's ~24) AND the rig-offset
+    // rate (a car-cam swivel pivot swings the eye around the car, so the
+    // offset changes fast while the car itself stands still - without this
+    // term the pivot lagged, measured travel 44 vs 82 uu). Summing them
+    // mirrors the horizontal term and matches the reference probed through
+    // a full freefall (car holds ~22-24 deg off-axis at every fall speed;
+    // only the eye's own slow low-speed softness from baseRateZ survives).
+    const float rateZ = baseRateZ +
+        (std::fabs(carVz) + std::fabs(rigVz)) / kRigLagCap;
     const float kx = 1.0f - std::exp(-rateX * dt);
     const float kz = 1.0f - std::exp(-rateZ * dt);
     if (!hasSmoothed_) {
