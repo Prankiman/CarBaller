@@ -59,6 +59,16 @@ private:
     // the long note above computeBallCam.
     float ballYaw_ = 0;         // eased bearing to the ball (rad, unwrapped)
     float ballPitch_ = 0;       // eased elevation to the ball (rad)
+    // Ball-cam rig swing state (see computeBallCam): the eased swing ANGLE
+    // (rotation around the car, opposite the view tilt) and the eased
+    // horizontal radius for the floor-pin slide-in, so the pin hand-off
+    // (radius ~0.3*parked) and the return never teleport the eye in one
+    // frame. The angle is eased instead of the absolute elevation so a
+    // manual swivel orbit (which moves the parked pose itself) is never
+    // lagged by the easing.
+    float swingAng_ = 0;        // current swing rotation (rad, >= 0)
+    float swingH_ = 0;          // current swung horizontal radius (uu)
+    bool hasSwing_ = false;     // swing state anchored to a snapshot
     float measYaw_ = 0;         // same bearing, unwrapped (never slewed)
     float prevPhi_ = 0;         // last reliable raw bearing
     bool hasBallAim_ = false;   // aim state anchored to a snapshot

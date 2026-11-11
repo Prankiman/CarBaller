@@ -21,6 +21,7 @@ void RLCamera::reset(const SimSnapshot& s, const CameraSettings& cs) {
     // from wherever it was: a preset move is a reposition, not a swing.
     hasBallAim_ = false;
     hasPrevPhi_ = false;
+    hasSwing_ = false;
     blend_ = (desired_ == CamMode::Ball) ? 1.0f : 0.0f;  // snap, no animation
     hasSmoothed_ = false;
     shakeAmp_ = 0;
@@ -46,7 +47,6 @@ void RLCamera::reset(const SimSnapshot& s, const CameraSettings& cs) {
 // reading: below this the ball sits on the car's vertical axis and atan2
 // returns direction noise, so the aim is held instead.
 static constexpr float kBallAimEps = 5.0f;
-
 // Max rate (rad/s) the ball-cam rig may change its own aim.
 //
 // The rig used to read the aim straight off the snapshot, and the measured
@@ -74,23 +74,57 @@ static constexpr float kBallAimEps = 5.0f;
 // cam's nose-follow rate: the nose is never degenerate, the ball bearing is.
 static constexpr float kBallAimSlew = 20.0f;
 
+// ---- ball-cam vertical aim + rig swing (decoded against the reference rig,
+// settled poses; see the comment in computeBallCam):
+//
+    // kAimKnee/kAimWidth: the view pitch stays parked while the ball rides up
+    // to ~3 deg above the parked eye level, then tilts onto the ball over a
+    // ~12 deg near-linear blend (reference decode, converted to eye-relative
+    // elevations: parked while the ball sits 0.8-3.6 deg over the car (below
+    // or just at eye level from the parked eye), ~4 deg off centre at 17.6
+    // deg over the car (~9.9 deg from the parked eye), ~2 deg off at 30.3
+    // (~23.6 from the eye) - i.e. fully tracking by ~15 deg eye-relative).
+    // The width is a compromise the reference itself implies: a tighter
+    // width centres the ball better through a fast graze but leans the view
+    // further off the car during a roof launch (reference holds the car at
+    // ~20 deg off-axis there; 12 deg of width keeps it ~23).
+    // One-sided: for a ball BELOW eye level the reference stays parked (the
+    // ball just rides below centre).
+    static constexpr float kAimKnee = 3.0f * (float)M_PI / 180.0f;
+    static constexpr float kAimWidth = 12.0f * (float)M_PI / 180.0f;
+// kSwingRatio: the eye rotates around the car OPPOSITE the view tilt at
+// ~0.45 rad of elevation per rad of tilt (reference: parked eye elevation
+// 25.5 deg drops to 17.6 at ball elevation 34, -2.1 at 51, floor-pinned
+// -2.1..-4.6 beyond).
+static constexpr float kSwingRatio = 0.45f;
+// kSwingElevMin: the swung eye's elevation stops at -5 deg; below that the
+// eye only slides inward along the bearing (reference: -2.1..-4.6 deg).
+static constexpr float kSwingElevMin = -5.0f * (float)M_PI / 180.0f;
+// kSwingFloorZ: the swung eye never goes below ~10 uu over the surface
+// (reference pins the eye at z = 10 with the car centre at z = 17).
+static constexpr float kSwingFloorZ = 10.0f;
+// kRiseCap: the parked ball-cam height lift with an elevated ball is a few
+// uu and saturates around 15 (reference settled eye heights 104-126 uu above
+// the car centre across ball elevations 0-45 deg) - the large
+// 0.5217*height*|E| lift an earlier decode assumed is NOT the reference's
+// answer to a high ball; the aim deadband + rig swing above are.
+static constexpr float kRiseCap = 15.0f;
+
 // ---------------------------------------------------------------- eye placement
 //
-// Both rigs used to sit at `carPos - fwd * distance + (0,0,height)` and feed
-// the pitch swivel into the VIEW ONLY. That made the two axes asymmetric:
-// left/right swung the eye around the car (the car held its place on screen
-// while the world swept past), while up/down rotated the camera around its own
-// starting point - a fixed eye and a tilting view, so the car slid across the
-// screen. Rocket League rotates around the car on both axes, so the pitch
-// swivel now swings the rig too.
+// Both rigs sit on a sphere of radius R = hypot(distance, height) at
+// elevation e0 = atan2(height, distance) around the car: left/right swivel
+// swings the eye around the car, and the pitch swivel swings it too (up/down
+// rotates around the car on both axes the way Rocket League does, not a
+// fixed eye with a tilting view). The view pitch is derived from wherever the
+// eye actually ended up, which keeps the car at a constant screen offset for
+// the whole swing. What the orbit cannot absorb comes back as a tilt -
+// `outTilt` - so the control never goes dead.
 //
-// The default pose is one point on a sphere of radius R = hypot(distance,
-// height) at elevation e0 = atan2(height, distance): pitchOff_ shifts the
-// elevation (looking up carries the eye down, looking down carries it up),
-// and the view pitch is then derived from wherever the eye actually ended up,
-// which keeps the car at a constant screen offset for the whole swing. What
-// the orbit cannot absorb comes back as a tilt - `outTilt` - so the control
-// never goes dead.
+// `heightRise` is the ball-cam's small parked-height lift with an elevated
+// ball (measured against the reference rig: a few uu to ~15 at 45 deg - NOT
+// the large lift an early decode assumed; the reference's real answer to a
+// high ball is the vertical aim/swing in computeBallCam, not a taller park).
 //
 // The one hard stop is the floor: the renderer always draws it opaque
 // (Renderer::render), so an eye below it would look at the car through solid
@@ -106,11 +140,6 @@ static constexpr float kMaxElev = 1.48353f; // rad (85 deg, reference eye-pitch 
 void RLCamera::placeEye(const CameraSettings& cs, const SimSnapshot& s,
                         float lookYaw, V3& outEye, float& outTilt,
                         float heightRise) const {
-    // heightRise: reference-decoded ball-cam law — while the ball is
-    // elevated over the car, the rig's pivot sits ABOVE the car center:
-    // rise = 0.5217 * height * |elevation of the ball over the car|. It
-    // steepens the rig's own parked pitch (and lifts its eye) without
-    // touching the car cam, where the rise is absent.
     const float h = cs.height + heightRise;
     const float rigR = std::hypot(cs.distance, h);
     const float e0 = std::atan2(h, cs.distance);
@@ -188,32 +217,120 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
 
     float lookYaw = ballYaw_ + yawOff_;
     float tilt;      // pitch swivel the orbit could not absorb (see placeEye)
-    // Reference law: the rig pivot rises above the car center by
-    // 0.5217 * height * |ball elevation over the car| (see placeEye). The
-    // car cam passes no rise (none in the reference car-cam path).
+
+    // ---- parked pose: the eye behind the car at (distance, height + rise).
+    // No distance multiplier (the reference rig sits exactly `distance`
+    // behind), and the rise is the small parked lift the reference shows
+    // with an elevated ball (see placeEye) - the reference's real answer to
+    // a HIGH ball is the aim deadband + rig swing below, not a taller park.
     const float toBallHoriz = std::max(toBall.len2d(), 1.0f);
     const float ballElev = std::atan2(toBall.z, toBallHoriz);
-    const float rise = 0.5217f * cs.height * std::fabs(ballElev);
-    // Ball cam needs a little more eye-to-ball clearance than car cam. The
-    // reference keeps the ball readable at close approaches instead of
-    // letting it fill the view and hide the car.
-    CameraSettings ballCam = cs;
-    ballCam.distance *= 1.08f;
-    placeEye(ballCam, s, lookYaw, outEye, tilt, rise);
+    const float rise = std::fmin(0.5217f * cs.height * std::fabs(ballElev),
+                                 kRiseCap);
+    placeEye(cs, s, lookYaw, outEye, tilt, rise);
 
-    // ---- vertical aim: same treatment, minus the branch (the elevation of
-    // a point above the horizon plane is single-valued). What this buys is
-    // the ball teleport - dribble puts the ball on the roof, possession drops
-    // it ahead - which used to kick the view up/down in one frame.
+    // ---- ball elevation measured from the parked eye, slew-limited (the
+    // slew is what keeps a pop or a fast pass from turning the view in one
+    // frame; see kBallAimSlew).
     V3 toT = s.ballPos - outEye;
     const float measPitch = std::atan2(toT.z, std::max(toT.len2d(), 1.0f));
     if (first) ballPitch_ = measPitch;
     else ballPitch_ += clampf(measPitch - ballPitch_, -slewStep, slewStep);
 
-    const float ballPitch = clampf(ballPitch_ + cs.angle * (float)M_PI / 180.0f
-                                       + tilt,
-                                   -kMaxElev, kMaxElev);
-    V3 ballDir = dirFromYawPitch(lookYaw, ballPitch);
+    // ---- vertical aim: a PARKED view with a deadband, not a ball-tracking
+    // one. Measured against the reference rig (refcam probes, settled):
+    // for a ball up to ~8 deg above the parked eye level the view pitch sits
+    // exactly at the parked angle (cs.angle + tilt) and the ball simply rides
+    // above centre - which is what keeps the car resting low-but-in-frame
+    // while a pass or a dribble ball is elevated. Past the knee the aim
+    // tilts smoothly onto the ball (fully ball-centred by ~+33 deg, matching
+    // the reference's offset shrinking to ~2 deg), and for a ball BELOW the
+    // eye level the same deadband mirrors: the view tilts down onto it.
+    // Tracking the ball exactly at all elevations (the old law) was what
+    // pushed the car out of the bottom of the frame the moment the ball
+    // launched off the roof.
+    const float deg2rad = (float)M_PI / 180.0f;
+    const float parkedPitch = cs.angle * deg2rad + tilt;
+    const float ballAim = clampf(ballPitch_ + cs.angle * deg2rad + tilt,
+                                 -kMaxElev, kMaxElev);
+    // One-sided deadband (see kAimKnee/kAimWidth): parked below the knee,
+    // then a near-linear blend onto the ball.
+    float w = 0.0f;   // 0: parked, 1: tilted onto the ball
+    if (ballPitch_ > kAimKnee)
+        w = clampf((ballPitch_ - kAimKnee) / kAimWidth, 0.0f, 1.0f);
+    float viewPitch = parkedPitch + w * (ballAim - parkedPitch);
+
+    // ---- rig swing: rotate the eye AROUND THE CAR, opposite the tilt. This
+    // is the piece that keeps the car visible while the view follows the
+    // ball: as the view tilts up at a rising ball the eye swings DOWN around
+    // the car (down to the floor, where it slides inward along the bearing -
+    // the reference pins the eye at ~10 uu over the floor and shrinks the
+    // radius, e.g. eye elevation -2..-4.6 deg at radius 195..86 for balls
+    // 600..3000 uu overhead), and as the view tilts down at a ball below the
+    // eye. The swing is ONE-SIDED: for a ball below eye level the reference
+    // rig stays parked too (the ball simply rides below centre - the decode
+    // only ever shows the knee on elevated balls), so a low ball must not
+    // swing the eye up. A view-only tilt (the old law) is what made the car
+    // slide out of the bottom of the frame on a roof launch: the whole rig
+    // rotates here instead.
+    const V3 rel = outEye - s.carPos;
+    const float distH = std::max(rel.len2d(), 1.0f);
+    const float eParked = std::atan2(rel.z, distH);
+    const float swing = kSwingRatio * (viewPitch - parkedPitch);
+    const float eTarget = clampf(eParked - swing, kSwingElevMin, kMaxElev);
+    float hTarget = distH;
+    float zTarget = s.carPos.z + hTarget * std::tan(eTarget);
+
+    // Floor stop for the swung rig: the reference pins the eye ~10 uu above
+    // the surface and, past that, slides IN along the bearing (radius
+    // shrinks, e.g. behind 195..86 for balls 600..3000 uu overhead while the
+    // elevation falls out to -2..-4.6 deg purely from the pin: the eye z is
+    // held and the elevation is just atan2(pin - carZ, radius)). The radius
+    // is bounded so the atan2 never blows up as the elevation crosses zero
+    // and so the slide-in stops near the reference's ~0.3*parked radius.
+    float surface;
+    if (s.onGround) {
+        surface = s.carPos.z - kCarRideHeight;
+    } else if (s.hasMapFloor) {
+        surface = std::min(s.floorZ, s.carPos.z);
+    } else {
+        surface = 0.0f;
+    }
+    const float swingMinZ = surface + kSwingFloorZ;
+    if (zTarget < swingMinZ) {
+        hTarget = clampf((swingMinZ - s.carPos.z) / std::min(std::tan(eTarget),
+                                                             -1e-3f),
+                         0.3f * distH, distH);
+        zTarget = swingMinZ;
+    }
+
+    // Ease the actual swung pose toward the targets. The swing ANGLE eases
+    // (a fast rate: it must track the slewed aim, only rounding its kinks),
+    // while the RADIUS eases slowly - without that the pin hand-off
+    // teleports: the frame the ball descends enough for the swing law to
+    // leave the floor pin, the radius would jump 0.3*parked -> parked
+    // (~190 uu) in one frame. During a pure manual swivel the angle target
+    // is identically zero, so the easing never lags the orbit.
+    if (!hasSwing_) {
+        swingAng_ = swing;
+        swingH_ = hTarget;
+        hasSwing_ = true;
+    } else {
+        static constexpr float kSwingAngRate = 12.0f;  // rad/s
+        static constexpr float kSwingHRate = 900.0f;   // uu/s
+        swingAng_ += clampf(swing - swingAng_, -kSwingAngRate * dt,
+                            kSwingAngRate * dt);
+        swingH_ += clampf(hTarget - swingH_, -kSwingHRate * dt,
+                          kSwingHRate * dt);
+    }
+    const float e = clampf(eParked - swingAng_, kSwingElevMin, kMaxElev);
+    float swingH = swingH_;
+    float swingZ = s.carPos.z + swingH * std::tan(e);
+    // Never let the eased pose fall through the floor while easing.
+    swingZ = std::fmax(swingZ, swingMinZ);
+
+    const V3 fwd(std::cos(lookYaw), std::sin(lookYaw), 0);
+    outEye = s.carPos - fwd * swingH + V3(0, 0, swingZ - s.carPos.z);
 
     // Ball cam's resting aim is the ball, but manual swivel must still orbit
     // the car. A ball-derived pitch leaves the car off-axis as soon as the
@@ -221,6 +338,8 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
     // Blend toward the same car-anchored aim used by car cam only while a
     // meaningful swivel offset is present, preserving the existing ball lock
     // with no stick input.
+    toT = s.ballPos - outEye;
+    V3 ballDir = dirFromYawPitch(lookYaw, viewPitch);
     if (ballOrbitAim_ > 0.0f) {
         const V3 carAim = s.carPos + V3(0, 0, cs.height * 0.25f);
         const V3 toCar = carAim - outEye;

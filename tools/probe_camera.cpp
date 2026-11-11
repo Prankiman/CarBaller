@@ -78,10 +78,12 @@ struct Metrics {
 // degenerate cases (A/C/E) are where the ideal rig itself used to jump; the
 // legitimate sweeps (B/D/F/G/H) are bounded by physics instead - G's limits
 // are what the unlimited rig already did while tracking a 4000 uu/s pass,
-// since that motion is real, not a jump. center is how far the ball is
-// allowed to drift off the view axis while the rig eases: ball cam exists to
-// hold the ball in the middle, so the ease may cost a little centering in
-// the degenerate cases but nothing in normal play.
+// since that motion is real, not a jump. center is how far the ball may sit
+// off the view axis. Since the reference-decoded vertical aim (parked pitch
+// with a deadband: the ball rides ABOVE centre until it is ~8 deg past the
+// parked eye level, then the aim tilts onto it) the bound is the ball's own
+// elevation from the eye while the deadband holds, not zero - the measured
+// reference offsets at these same poses run 2-14 deg.
 struct Case {
     const char* name;
     SimSnapshot (*at)(float t);
@@ -159,13 +161,16 @@ SimSnapshot fastPass(float t) {
 
 const Case kCases[] = {
     {"A overhead crossing",   overHead,        1.2f, 150, 25, 25},
-    {"B normal pass",         normalPass,      1.5f,  40,  8,  8},
-    {"C dribble teleport",    dribbleTeleport, 1.2f, 150, 25,  8},
-    {"D dribble hold",        dribbleHold,     2.0f,  40,  8,  8},
-    {"E overhead drift",      overheadDrift,   2.0f, 150, 25,  8},
-    {"F tight orbit",         orbit,           3.0f,  40,  8,  8},
-    {"G supersonic graze",    grazeFast,       0.8f, 120, 26,  8},
-    {"H fast pass 600uu",     fastPass,        1.5f,  40,  8,  8},
+    {"B normal pass",         normalPass,      1.5f,  40,  8, 14},
+    {"C dribble teleport",    dribbleTeleport, 1.2f, 150, 25, 14},
+    {"D dribble hold",        dribbleHold,     2.0f,  40,  8, 14},
+    {"E overhead drift",      overheadDrift,   2.0f, 150, 25, 20},
+    {"F tight orbit",         orbit,           3.0f,  40,  8, 15},
+    // G: reference holds ~10 deg max; our 12 deg blend width (a deliberate
+    // compromise that keeps the roof-launch car nearer the reference's 20 deg
+    // off-axis) leaves ~10.5 at the closest approach.
+    {"G supersonic graze",    grazeFast,       0.8f, 120, 26, 11},
+    {"H fast pass 600uu",     fastPass,        1.5f,  40,  8, 16},
 };
 
 Metrics run(const Case& c) {
@@ -522,12 +527,14 @@ bool checkGroundHeal() {
 //     "snap" on, it returns exponentially at ~34.5*(ss/10)/s.
 //  2. mode transition: the car<->ball blend follows consumed = 1-lambda^2
 //     (slow start, fast finish) over T = 0.5/transitionSpeed seconds.
-//  3. ball-cam pivot rise: with the ball elevated at E over the car, the rig
-//     height grows by 0.5217*height*|E|, so the parked eye height rises to
-//     rigR = hypot(distance, height') and elev = atan2(height', distance).
+//  3. ball-cam vertical law: the parked view pitch has a DEADBAND (the ball
+//     rides above centre until ~8 deg past the parked eye level, then the
+//     aim tilts onto the ball) while the rig swings around the car the
+//     OPPOSITE way (down toward the floor for a high ball, sliding inward
+//     once floor-pinned). See checkRefLaws case 3 and the refcam probes.
 bool checkRefLaws() {
     bool ok = true;
-    std::printf("\n=== reference camera laws (swivel plateau, transition shape, ball-cam rise) ===\n");
+    std::printf("\n=== reference camera laws (swivel plateau, transition shape, ball-cam steep pose) ===\n");
 
     // -- 1. swivel plateau (car cam, full right-input held for 2 s)
     CameraSettings cs = probeSettings();
@@ -609,26 +616,39 @@ bool checkRefLaws() {
                 " tail %.2f uu (no cut, done by T)\n",
                 okShape ? "ok  " : "FAIL", total, maxStep, tail);
 
-    // -- 3. ball-cam pivot rise: ball at 45 deg over the car, height 100.
-    //        rise = 0.5217*100*(pi/4) = 40.98 -> parked eye z = carZ +
-    //        hypot(270, 140.98)*sin(atan2(140.98, 270)).
+    // -- 3. ball-cam vertical law: ball 1000 uu out at 45 deg over the car
+    //        (the probe the old rise decode used). The reference rig here has
+    //        LEFT its parked pose: the aim has tilted onto the ball and the
+    //        eye has swung down around the car (measured on the reference
+    //        rig, settled: eye ~242 behind / ~46 up, view pitch ~26 deg,
+    //        ball ~12 deg off centre). The old decode instead lifted the
+    //        parked eye by 0.5217*height*|E| = 41 uu and kept the view on the
+    //        ball from there - which is what dropped the car out of frame on
+    //        a roof launch.
     RLCamera rc;
     SimSnapshot rs = baseCar();
     rs.ballPos = V3(1000, 0, 1017);   // dz = 1000 over car center z=17
     rc.reset(rs, cs);
     rc.setMode(CamMode::Ball);
     rc.update(kFrameDt, cs, rs, 0, 0);
-    for (int i = 0; i < int(1.5f / kFrameDt); i++)
+    for (int i = 0; i < int(3.0f / kFrameDt); i++)
         rc.update(kFrameDt, cs, rs, 0, 0);
-    constexpr float kRise = 0.5217f * 100.0f * (float)M_PI / 4.0f;
-    const float h2 = 100.0f + kRise;
-    const float expectZ = 17.0f + std::hypot(270.0f, h2) *
-                                    std::sin(std::atan2(h2, 270.0f));
-    const bool okRise = std::fabs(rc.eye.z - expectZ) < 4.0f;
+    const V3 relEye = rc.eye - rs.carPos;
+    const float behind = -relEye.x;   // ball is straight ahead (+x)
+    const V3 viewDir = (rc.target - rc.eye).norm();
+    const float viewPitch = std::asin(viewDir.z) * 57.2957795f;
+    const V3 toBall = (rs.ballPos - rc.eye).norm();
+    const float angBall = std::acos(clampf(viewDir.dot(toBall), -1.0f, 1.0f)) *
+                          57.2957795f;
+    const bool okRise = behind > 210.0f && behind < 290.0f &&
+                        relEye.z > 25.0f && relEye.z < 65.0f &&
+                        viewPitch > 20.0f && viewPitch < 34.0f &&
+                        angBall < 14.0f;
     ok = ok && okRise;
-    std::printf("ball-cam pivot rise    %s eye z %7.1f/%.1f uu"
-                " (rise %.1f uu at 45 deg)\n",
-                okRise ? "ok  " : "FAIL", rc.eye.z, expectZ, kRise);
+    std::printf("ball-cam steep pose    %s behind %5.1f up %5.1f"
+                " viewPitch %5.1f angBall %4.1f"
+                " (ref ~242/~46/26/12)\n",
+                okRise ? "ok  " : "FAIL", behind, relEye.z, viewPitch, angBall);
     return ok;
 }
 
