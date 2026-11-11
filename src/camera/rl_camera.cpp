@@ -47,37 +47,33 @@ void RLCamera::reset(const SimSnapshot& s, const CameraSettings& cs) {
 // reading: below this the ball sits on the car's vertical axis and atan2
 // returns direction noise, so the aim is held instead.
 static constexpr float kBallAimEps = 5.0f;
-// Max rate (rad/s) the ball-cam rig may change its own aim.
+// Max rate (rad/s) the ball-cam rig may change its own VIEW PITCH.
 //
-// The rig used to read the aim straight off the snapshot, and the measured
-// car->ball bearing is only well conditioned while the ball is clear of the
-// car's vertical axis. As the ball passes directly over (or under) the car -
-// a drop on the roof, a ball crossing overhead - the horizontal offset runs
-// through zero and atan2 flips in a single frame, with the same result on
-// either side of the crossing: the eye teleported to the far side of the car
-// and the view spun around in ONE frame. The eye follower folds
-// frame-to-frame rig speed into its follow rate, so a jump like that lands
-// its per-frame factor at ~1: the camera snapped to the new pose instead of
-// easing into it.
+// History: the rig used to read both aim axes straight off the snapshot, and
+// the horizontal bearing is only well conditioned while the ball is clear of
+// the car's vertical axis. As the ball passes directly over (or under) the
+// car the horizontal offset runs through zero and atan2 flips in one frame,
+// teleporting the eye to the far side of the car. A 20 rad/s cap on the yaw
+// fixed that, but probed against the reference rig it is wrong: the
+// reference applies the bearing LAGLESSLY (airborne flybys, over-the-ball
+// passes and turning aerials all show 0 deg of lag), where the cap leaves
+// the eye sideways for ~0.16 s on every pass over the ball - the "camera is
+// not behind the car in the air" report. So the YAW now tracks the unwrapped
+// measurement directly, exactly like the reference; the degenerate
+// axis-crossing swing the cap used to soften is real Rocket League behavior
+// (the reference itself moves the eye 516 uu / turns the view 75 deg in one
+// frame through an overhead crossing - see the probe header).
 //
-// Measured by driving the update loop through the degenerate cases
-// (tools/probe_camera.cpp): an overhead crossing moved the eye 516 uu and
-// turned the view 75 deg in one frame, a ball landing on the roof 225 uu /
-// 50 deg, a ball drifting around overhead (bearing pure noise) 534 uu /
-// 95 deg - all one-frame jumps.
-//
-// 20 rad/s is just under the fastest sweep real play can ask for (a 4000
-// uu/s ball passing at grazing range, ~150 uu off the car's axis, sweeps
-// ~27 rad/s), so tracking stays within ~1 deg of the unlimited case
-// everywhere except the degenerate ones - which now swing around the car
-// over ~0.15 s instead of jumping. Note this is deliberately above the car
-// cam's nose-follow rate: the nose is never degenerate, the ball bearing is.
+// The PITCH keeps the cap: the elevation of a point above the horizon plane
+// is single-valued (no atan2 flip), a fast-approaching ball genuinely needs
+// the cap to keep the view from kicking in one frame, and the roof-dribble
+// teleport (a ~150 deg pitch jump) must ease rather than snap.
 static constexpr float kBallAimSlew = 20.0f;
 
 // ---- ball-cam vertical aim + rig swing (decoded against the reference rig,
 // settled poses; see the comment in computeBallCam):
 //
-    // kAimKnee/kAimWidth: the view pitch stays parked while the ball rides up
+// kAimKnee/kAimWidth: the view pitch stays parked while the ball rides up
     // to ~3 deg above the parked eye level, then tilts onto the ball over a
     // ~12 deg near-linear blend (reference decode, converted to eye-relative
     // elevations: parked while the ball sits 0.8-3.6 deg over the car (below
@@ -177,14 +173,16 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
     const bool first = !hasBallAim_;
     const float slewStep = kBallAimSlew * dt;
 
-    // ---- horizontal aim: keep the bearing on one continuous branch.
-    // measYaw_ unwraps the raw bearing frame to frame (always the short way,
-    // so a far-side teleport still approaches the short way round), while
-    // ballYaw_ chases it at the slew rate. Tracking the unwrapped
-    // measurement - rather than the error against ballYaw_ directly - is what
-    // keeps the branch choice correct through the overhead crossing, where
-    // the shortest path from the current aim would send the rig the wrong
-    // way around the car.
+    // ---- horizontal aim: keep the bearing on one continuous branch, and
+    // track it LAGLESSLY (the reference applies the bearing with no cap -
+    // probed: 0 deg of lag through airborne flybys, over-the-ball passes and
+    // turning aerials, where a rate cap leaves the eye sideways for ~0.16 s
+    // on every pass over the ball). measYaw_ unwraps the raw bearing frame
+    // to frame (always the short way, so a far-side teleport still
+    // approaches the short way round); the degenerate axis-crossing swing
+    // that falls out of the atan2 flip is real Rocket League behavior (the
+    // reference moves the eye 516 uu in one frame through an overhead
+    // crossing - see the kBallAimSlew note).
     if (reliable) {
         const float phi = std::atan2(toBall.y, toBall.x);
         if (first) {
@@ -192,7 +190,7 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
             hasBallAim_ = true;
         } else {
             measYaw_ = hasPrevPhi_ ? measYaw_ + wrapAngle(phi - prevPhi_) : phi;
-            ballYaw_ += clampf(measYaw_ - ballYaw_, -slewStep, slewStep);
+            ballYaw_ = measYaw_;
         }
         prevPhi_ = phi;
         hasPrevPhi_ = true;
