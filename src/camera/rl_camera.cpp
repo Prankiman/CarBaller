@@ -88,10 +88,17 @@ static constexpr float kBallAimSlew = 20.0f;
     // ball just rides below centre).
     static constexpr float kAimKnee = 3.0f * (float)M_PI / 180.0f;
     static constexpr float kAimWidth = 12.0f * (float)M_PI / 180.0f;
+static constexpr float kSwingRatio = 0.45f;
 // kSwingElevMin: the swung eye's elevation floor for low pitches; below the
 // aim-blend the eye may mirror the view pitch (see computeBallCam) so the
 // eye-car-ball line stays straight at steep looks.
 static constexpr float kSwingElevMin = -5.0f * (float)M_PI / 180.0f;
+// kMirrorBlend: how far the swing leans from the old gentle 0.45-ratio law
+// (eye rotates opposite the view tilt at 0.45 rad/rad, floor-stopped at -5
+// deg) toward the full colinear mirror (eye elevation = -view pitch, car
+// always dead-centre). The full mirror read as a snap when climbing walls;
+// this keeps most of the old softness with a nudge of the dive centring.
+static constexpr float kMirrorBlend = 0.35f;
 // kSwingFloorZ: the swung eye never goes below ~10 uu over the surface
 // (reference pins the eye at z = 10 with the car centre at z = 17).
 static constexpr float kSwingFloorZ = 10.0f;
@@ -265,9 +272,13 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
     const V3 rel = outEye - s.carPos;
     const float distH = std::max(rel.len2d(), 1.0f);
     const float eParked = std::atan2(rel.z, distH);
-    const float eTarget = clampf(eParked + w * (-viewPitch - eParked),
-                                 std::min(kSwingElevMin, -viewPitch),
-                                 kMaxElev);
+    const float oldTarget = clampf(eParked - kSwingRatio * (viewPitch - parkedPitch),
+                                   kSwingElevMin, kMaxElev);
+    const float mirrorTarget = clampf(-viewPitch,
+                                      std::min(kSwingElevMin, -viewPitch),
+                                      kMaxElev);
+    const float eTarget = eParked +
+        w * (std::lerp(oldTarget, mirrorTarget, kMirrorBlend) - eParked);
     const float swing = eParked - eTarget;
     float hTarget = distH;
     float zTarget = s.carPos.z + hTarget * std::tan(eTarget);
@@ -307,9 +318,9 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
         swingH_ = hTarget;
         hasSwing_ = true;
     } else {
-        static constexpr float kSwingAngRate = 30.0f;  // rad/s (the mirrored
-        // elevation must track the slewed aim: 12 left a visible whip-lag
-        // during powered dives)
+        static constexpr float kSwingAngRate = 20.0f;  // rad/s (between the
+        // original 12 and the full-mirror 30: the colinear mirror read as a
+        // snap when climbing walls)
         static constexpr float kSwingHRate = 900.0f;   // uu/s
         swingAng_ += clampf(swing - swingAng_, -kSwingAngRate * dt,
                             kSwingAngRate * dt);
