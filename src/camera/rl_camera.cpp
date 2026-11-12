@@ -88,13 +88,9 @@ static constexpr float kBallAimSlew = 20.0f;
     // ball just rides below centre).
     static constexpr float kAimKnee = 3.0f * (float)M_PI / 180.0f;
     static constexpr float kAimWidth = 12.0f * (float)M_PI / 180.0f;
-// kSwingRatio: the eye rotates around the car OPPOSITE the view tilt at
-// ~0.45 rad of elevation per rad of tilt (reference: parked eye elevation
-// 25.5 deg drops to 17.6 at ball elevation 34, -2.1 at 51, floor-pinned
-// -2.1..-4.6 beyond).
-static constexpr float kSwingRatio = 0.45f;
-// kSwingElevMin: the swung eye's elevation stops at -5 deg; below that the
-// eye only slides inward along the bearing (reference: -2.1..-4.6 deg).
+// kSwingElevMin: the swung eye's elevation floor for low pitches; below the
+// aim-blend the eye may mirror the view pitch (see computeBallCam) so the
+// eye-car-ball line stays straight at steep looks.
 static constexpr float kSwingElevMin = -5.0f * (float)M_PI / 180.0f;
 // kSwingFloorZ: the swung eye never goes below ~10 uu over the surface
 // (reference pins the eye at z = 10 with the car centre at z = 17).
@@ -258,24 +254,21 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
         w = clampf((ballPitch_ - kAimKnee) / kAimWidth, 0.0f, 1.0f);
     float viewPitch = parkedPitch + w * (ballAim - parkedPitch);
 
-    // ---- rig swing: rotate the eye AROUND THE CAR, opposite the tilt. This
-    // is the piece that keeps the car visible while the view follows the
-    // ball: as the view tilts up at a rising ball the eye swings DOWN around
-    // the car (down to the floor, where it slides inward along the bearing -
-    // the reference pins the eye at ~10 uu over the floor and shrinks the
-    // radius, e.g. eye elevation -2..-4.6 deg at radius 195..86 for balls
-    // 600..3000 uu overhead), and as the view tilts down at a ball below the
-    // eye. The swing is ONE-SIDED: for a ball below eye level the reference
-    // rig stays parked too (the ball simply rides below centre - the decode
-    // only ever shows the knee on elevated balls), so a low ball must not
-    // swing the eye up. A view-only tilt (the old law) is what made the car
-    // slide out of the bottom of the frame on a roof launch: the whole rig
-    // rotates here instead.
+    // Colinear rig swing: as the view tilts onto an elevated ball (past the
+    // aim knee), the eye swings AROUND the car to mirror the view pitch, so
+    // the eye-car-ball line stays straight and the car remains centred in
+    // frame at ANY pitch - including a powered dive under a launched ball
+    // (measured: car holds 1-3 deg off-axis through a 45 deg dive, vs
+    // 50-65 deg with the old 0.45-ratio swing that stopped at -5 deg of
+    // elevation). The floor stop below then slides the eye inward along the
+    // bearing near the surface exactly as before.
     const V3 rel = outEye - s.carPos;
     const float distH = std::max(rel.len2d(), 1.0f);
     const float eParked = std::atan2(rel.z, distH);
-    const float swing = kSwingRatio * (viewPitch - parkedPitch);
-    const float eTarget = clampf(eParked - swing, kSwingElevMin, kMaxElev);
+    const float eTarget = clampf(eParked + w * (-viewPitch - eParked),
+                                 std::min(kSwingElevMin, -viewPitch),
+                                 kMaxElev);
+    const float swing = eParked - eTarget;
     float hTarget = distH;
     float zTarget = s.carPos.z + hTarget * std::tan(eTarget);
 
@@ -314,14 +307,17 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
         swingH_ = hTarget;
         hasSwing_ = true;
     } else {
-        static constexpr float kSwingAngRate = 12.0f;  // rad/s
+        static constexpr float kSwingAngRate = 30.0f;  // rad/s (the mirrored
+        // elevation must track the slewed aim: 12 left a visible whip-lag
+        // during powered dives)
         static constexpr float kSwingHRate = 900.0f;   // uu/s
         swingAng_ += clampf(swing - swingAng_, -kSwingAngRate * dt,
                             kSwingAngRate * dt);
         swingH_ += clampf(hTarget - swingH_, -kSwingHRate * dt,
                           kSwingHRate * dt);
     }
-    const float e = clampf(eParked - swingAng_, kSwingElevMin, kMaxElev);
+    const float e = clampf(eParked - swingAng_,
+                           std::min(kSwingElevMin, -viewPitch), kMaxElev);
     float swingH = swingH_;
     float swingZ = s.carPos.z + swingH * std::tan(e);
     // Never let the eased pose fall through the floor while easing.
