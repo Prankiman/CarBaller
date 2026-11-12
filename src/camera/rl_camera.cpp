@@ -254,11 +254,17 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
     const float parkedPitch = cs.angle * deg2rad + tilt;
     const float ballAim = clampf(ballPitch_ + cs.angle * deg2rad + tilt,
                                  -kMaxElev, kMaxElev);
-    // One-sided deadband (see kAimKnee/kAimWidth): parked below the knee,
-    // then a near-linear blend onto the ball.
+    // Symmetric deadband: parked within the knee either side, then a
+    // near-linear blend onto the ball past it (the blend weight is from the
+    // pitch MAGNITUDE - the aim sign comes from ballAim itself). Without the
+    // downward branch a car high above the ball (post-aerial, falling past
+    // it) kept the parked up-tilt and the ball sat out of frame below.
     float w = 0.0f;   // 0: parked, 1: tilted onto the ball
-    if (ballPitch_ > kAimKnee)
-        w = clampf((ballPitch_ - kAimKnee) / kAimWidth, 0.0f, 1.0f);
+    {
+        const float over = std::fabs(ballPitch_) - kAimKnee;
+        if (over > 0.0f)
+            w = clampf(over / kAimWidth, 0.0f, 1.0f);
+    }
     float viewPitch = parkedPitch + w * (ballAim - parkedPitch);
 
     // Colinear rig swing: as the view tilts onto an elevated ball (past the
