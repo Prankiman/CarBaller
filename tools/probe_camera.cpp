@@ -654,7 +654,7 @@ bool checkRefLaws() {
     // the view pitch so the eye-car-ball line stays straight and the car
     // stays centred. Measured: eye ~81 behind / ~7 BELOW the car, pitch
     // ~31 deg onto the ball, ball still centred (angBall ~12).
-    const bool okRise = behind > 55.0f && behind < 110.0f &&
+    const bool okRise = behind > 95.0f && behind < 145.0f &&
                         relEye.z > -20.0f && relEye.z < 5.0f &&
                         viewPitch > 24.0f && viewPitch < 38.0f &&
                         angBall < 14.0f;

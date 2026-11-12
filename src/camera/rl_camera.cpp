@@ -98,7 +98,7 @@ static constexpr float kSwingElevMin = -5.0f * (float)M_PI / 180.0f;
 // deg) toward the full colinear mirror (eye elevation = -view pitch, car
 // always dead-centre). The full mirror read as a snap when climbing walls;
 // this keeps most of the old softness with a nudge of the dive centring.
-static constexpr float kMirrorBlend = 0.35f;
+static constexpr float kMirrorBlend = 0.28f;
 // kSwingFloorZ: the swung eye never goes below ~10 uu over the surface
 // (reference pins the eye at z = 10 with the car centre at z = 17).
 static constexpr float kSwingFloorZ = 10.0f;
@@ -318,7 +318,7 @@ void RLCamera::computeBallCam(const CameraSettings& cs, const SimSnapshot& s,
         swingH_ = hTarget;
         hasSwing_ = true;
     } else {
-        static constexpr float kSwingAngRate = 20.0f;  // rad/s (between the
+        static constexpr float kSwingAngRate = 18.0f;  // rad/s (between the
         // original 12 and the full-mirror 30: the colinear mirror read as a
         // snap when climbing walls)
         static constexpr float kSwingHRate = 900.0f;   // uu/s
