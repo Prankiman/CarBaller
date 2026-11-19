@@ -105,6 +105,7 @@ struct FreeplaySettings {
     float launchAngle = 10.0f;     // degrees upward
     int resetShotPreset = 0;       // index into presets
     float gameSpeed = 100.0f;      // 0..150 (%): global simulation speed
+    int carBody = 0;               // 0 = Fennec body (Octane hitbox), 1 = Dominus
 };
 
 struct GraphicsSettings {

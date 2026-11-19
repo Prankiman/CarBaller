@@ -74,6 +74,7 @@ struct App {
     bool camResetPending = true;
     bool needSave = false;
     int lastVsync = -1;
+    int activeCarBody = 0;   // Car Body setting the sim/renderer were built for
 
     // boost particle accumulator
     float boostAccum = 0;
@@ -87,6 +88,7 @@ struct App {
     uint64_t rendererMapGen = 0;        // Sim::mapGen() the renderer last uploaded
     std::unique_ptr<MapJob> mapJob;     // parse in flight (worker thread)
     std::vector<Toast> toasts;          // top-right status/error messages
+
 };
 
 // Top-right notification stack. Failures are what the user most needs to see
@@ -266,7 +268,8 @@ int runApp(int argc, char** argv) {
 
     // ---- sim
     std::string meshDir = findMeshDir();
-    if (!a.sim.init(meshDir)) {
+    a.activeCarBody = a.settings.freeplay.carBody;
+    if (!a.sim.init(meshDir, a.activeCarBody)) {
         std::fprintf(stderr, "[app] sim init failed (mesh dir: %s)\n", meshDir.c_str());
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplSDL2_Shutdown();
@@ -279,7 +282,7 @@ int runApp(int argc, char** argv) {
     a.sim.applyControlSettings(a.settings.ctrl);
 
     // ---- renderer
-    if (!a.renderer.init(meshDir, findModelDir())) {
+    if (!a.renderer.init(meshDir, findModelDir(), a.activeCarBody)) {
         std::fprintf(stderr, "[app] renderer init failed\n");
         a.sim.shutdown();
         ImGui_ImplOpenGL3_Shutdown();
@@ -810,6 +813,30 @@ int runApp(int argc, char** argv) {
                 a.sim.applyControlSettings(a.settings.ctrl);
                 applyGraphics(a);
                 a.audio.setMasterVolume(a.settings.sound.volume);
+
+                // Car Body switch: respawn the sim on the new hitbox and
+                // rebuild the body/wheel meshes to match.
+                if (a.activeCarBody != a.settings.freeplay.carBody) {
+                    a.activeCarBody = a.settings.freeplay.carBody;
+                    a.sim.shutdown();
+                    if (a.sim.init(meshDir, a.activeCarBody)) {
+                        a.sim.applyControlSettings(a.settings.ctrl);
+                        a.renderer.rebuildAssets(meshDir, findModelDir(),
+                                                 a.activeCarBody);
+                        const RocketSim::CarConfig& cfg = a.sim.car()->config;
+                        a.renderer.setHitboxDims(
+                            V3(cfg.hitboxSize.x, cfg.hitboxSize.y, cfg.hitboxSize.z),
+                            V3(cfg.hitboxPosOffset.x, cfg.hitboxPosOffset.y,
+                               cfg.hitboxPosOffset.z),
+                            a.sim.arena()->ball->GetRadius());
+                        a.camResetPending = true;
+                        pushToast(a, a.activeCarBody == 1
+                                         ? "Dominus - Dominus hitbox"
+                                         : "Fennec - Octane hitbox", 3.0);
+                    } else {
+                        std::fprintf(stderr, "[app] sim re-init failed\n");
+                    }
+                }
             }
             if (!pOpen) {
                 a.menuOpen = false;

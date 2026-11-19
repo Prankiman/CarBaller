@@ -69,7 +69,7 @@ static bool ballAtWheels(const CarState& c, const BallState& b, const CarConfig&
     return v.z <= -0.3f * dist;
 }
 
-bool Sim::init(const std::string& meshDir) {
+bool Sim::init(const std::string& meshDir, int carBody) {
     if (!std::filesystem::exists(std::filesystem::path(meshDir) / "soccar")) {
         std::fprintf(stderr, "[sim] collision meshes not found at %s\n", meshDir.c_str());
         return false;
@@ -98,7 +98,8 @@ bool Sim::init(const std::string& meshDir) {
 
     ballR_ = arena_->ball->GetRadius();
 
-    car_ = arena_->AddCar(Team::BLUE, CAR_CONFIG_OCTANE);
+    car_ = arena_->AddCar(Team::BLUE,
+                          carBody == 1 ? CAR_CONFIG_DOMINUS : CAR_CONFIG_OCTANE);
     if (!car_) {
         std::fprintf(stderr, "[sim] AddCar failed\n");
         return false;

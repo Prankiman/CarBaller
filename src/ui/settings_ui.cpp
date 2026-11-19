@@ -305,6 +305,16 @@ void drawFreeplayTab(FreeplaySettings& f, bool& changed, bool& entryOpen) {
     f.resetShotPreset = preset;
 }
 
+void drawGarageTab(FreeplaySettings& f, bool& changed, bool& entryOpen) {
+    static const char* kCarBodies[] = {"Fennec (Octane hitbox)", "Dominus"};
+    int car = f.carBody;
+    comboIndex("Car Body", &car, 2, kCarBodies, changed,
+               "Chassis the game spawns. Each body drives on its real Rocket "
+               "League hitbox (Fennec on Octane's, the Dominus on its own, "
+               "longer and flatter). Switching respawns the car at kickoff.");
+    f.carBody = car;
+}
+
 void drawGraphicsTab(GraphicsSettings& g, bool& changed, bool& entryOpen) {
     check("VSync", &g.vsync, changed,
           "Synchronize frames to the display refresh rate.");
@@ -516,6 +526,12 @@ bool SettingsUI::draw(Settings& settings, InputSystem& input, bool* pOpen, MapTa
         if (ImGui::BeginTabItem("Controls")) {
             ImGui::PushID("Controls");
             drawControlsTab(settings.ctrl, changed, entryOpen);
+            ImGui::PopID();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Garage")) {
+            ImGui::PushID("Garage");
+            drawGarageTab(settings.freeplay, changed, entryOpen);
             ImGui::PopID();
             ImGui::EndTabItem();
         }

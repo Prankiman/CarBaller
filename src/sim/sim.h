@@ -51,7 +51,8 @@ struct BallSurfaceHitEvent {
 class Sim {
 public:
     // meshDir: folder that contains "soccar/*.cmf"
-    bool init(const std::string& meshDir);
+    // carBody: 0 = Fennec on the Octane hitbox, 1 = Dominus on its own hitbox
+    bool init(const std::string& meshDir, int carBody = 0);
     void shutdown();
 
     // Advance simulation time by dt seconds (accumulator, fixed tick).

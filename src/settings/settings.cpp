@@ -138,7 +138,7 @@ bool Settings::save(const std::string& path) const {
     j["freeplay"] = {
         {"launchSpeed", freeplay.launchSpeed}, {"launchAngle", freeplay.launchAngle},
         {"resetShotPreset", freeplay.resetShotPreset},
-        {"gameSpeed", freeplay.gameSpeed},
+        {"gameSpeed", freeplay.gameSpeed}, {"carBody", freeplay.carBody},
     };
     j["graphics"] = {
         {"vsync", gfx.vsync}, {"fpsCap", gfx.fpsCap},
@@ -148,7 +148,6 @@ bool Settings::save(const std::string& path) const {
     j["sound"] = {
         {"volume", sound.volume},
     };
-
     json jb;
     for (auto& [a, list] : binds.binds) {
         json arr = json::array();
@@ -211,6 +210,7 @@ bool Settings::load(const std::string& path) {
         freeplay.resetShotPreset =
             c.value("resetShotPreset", c.value("takePositionPreset", freeplay.resetShotPreset));
         freeplay.gameSpeed = c.value("gameSpeed", freeplay.gameSpeed);
+        freeplay.carBody = c.value("carBody", freeplay.carBody);
     }
     if (j.contains("graphics")) {
         auto& c = j["graphics"];
@@ -271,6 +271,7 @@ bool Settings::load(const std::string& path) {
     freeplay.launchSpeed = clampf(freeplay.launchSpeed, 1000.0f, 5000.0f);
     freeplay.launchAngle = clampf(freeplay.launchAngle, -90.0f, 90.0f);
     freeplay.gameSpeed = clampf(freeplay.gameSpeed, 0.0f, 150.0f);
+    if (freeplay.carBody < 0 || freeplay.carBody > 1) freeplay.carBody = 0;
     gfx.wallOpacity = clampf(gfx.wallOpacity, 0.0f, 1.0f);
 
     return true;

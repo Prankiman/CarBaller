@@ -146,13 +146,21 @@ Col mapColorFor(const std::string& name) {
 
 }  // namespace
 
-bool Renderer::init(const std::string& meshDir, const std::string& modelDir) {
+bool Renderer::init(const std::string& meshDir, const std::string& modelDir,
+                    int carBody) {
     bool ok = true;
     ok &= lit_.compile(LIT_VS, LIT_FS, "lit");
     ok &= unlit_.compile(UNLIT_VS, UNLIT_FS, "unlit");
-    ok &= assets_.build(meshDir, modelDir);
+    ok &= assets_.build(meshDir, modelDir, carBody);
     if (!ok) std::fprintf(stderr, "[renderer] init failed\n");
     return ok;
+}
+
+void Renderer::rebuildAssets(const std::string& meshDir,
+                             const std::string& modelDir, int carBody) {
+    assets_.destroy();
+    assets_.build(meshDir, modelDir, carBody);
+    wheelSpin_ = 0;
 }
 
 void Renderer::shutdown() {

@@ -411,66 +411,138 @@ bool buildFennecBody(MeshBuilder& mb, const std::string& modelDir) {
     return !mb.verts.empty();
 }
 
-// Wheels: separate STLs lying flat (axle = Z, layout center (cx,cy)); stood up
-// so the axle runs along Y, painted in radial bands (tire/rim/hub).
+// ---------------------------------------------------------------- Dominus
+// Sketchfab low-poly Dominus fanart, extracted with Blender (the source .blend
+// models only the right half; the Mirror modifier is baked into the exported
+// STL). Model space = Blender world coords: forward +Y (headlights at max Y),
+// width X (half-width 1.28699 after mirroring), up Z. Aligned to the Dominus
+// hitbox (RocketSim config: 130.427 long, planes x = -56.21..74.21, z =
+// -1.15..32.65, half-width 42.89) the same way Fennec aligns to Octane's:
+// width-exact scale, tail just past the hitbox rear, wheels in the arches.
+constexpr float DK = 33.3293f;        // model units -> car units (width-exact: 85.78)
+constexpr float DYMIN = -2.17001f;    // model rear-most point (y, length axis)
+constexpr float DZMIN = 0.124763f;    // model lowest point (front tire bottom)
+constexpr float DXREAR = -61.0f;      // car-space x of the body's rear bumper
+constexpr float D_GROUND = -17.0f;    // wheel contact plane in car space
+// (= kCarRestZ: both car configs rest with their origin 17 above the floor,
+// so the sculpted front tread - whose lowest point is the body's z-min -
+// lands exactly on the ground)
+                                      // (susp rest - wheel rad, RocketSim config)
+
+// Model -> car: forward +Y -> +X, width X -> -Y, tire bottoms onto the
+// contact plane.
+V3 dominusBodyXf(const V3& p) {
+    return V3((p.y - DYMIN) * DK + DXREAR, -p.x * DK, (p.z - DZMIN) * DK + D_GROUND);
+}
+
+// Paint: dark graphite body, near-black glass on the raked screens and the
+// greenhouse above the beltline (cut lines below are car-space, derived from
+// the source model's windshield box - keep in sync if the placement changes).
+Col dominusBodyCol(const V3& p, const V3& n) {
+    const Col body(0.13f, 0.14f, 0.16f, 1);
+    const Col glass(0.04f, 0.05f, 0.06f, 1);
+    const bool raked = std::fabs(n.z) > 0.25f && std::fabs(n.z) < 0.94f &&
+                       p.z > 15.0f;
+    const bool greenhouse = std::fabs(n.y) > 0.55f && n.z < 0.45f &&
+                            p.z > 17.0f && p.x > -19.5f && p.x < 21.5f;
+    return (raked || greenhouse) ? glass : body;
+}
+
+bool buildDominusBody(MeshBuilder& mb, const std::string& modelDir) {
+    std::vector<float> tris;
+    if (!readStl(modelDir + "/dominus.stl", tris)) return false;
+    appendStl(tris, mb, dominusBodyXf, dominusBodyCol);
+    return !mb.verts.empty();
+}
+
+// Dominus wheels: procedural, sized to the sculpt's silhouette (the wheel
+// well openings and the ground contact of the body transform are calibrated
+// to these numbers). Six real spoke boxes on each face stand proud of a
+// recessed dark backdrop, so the player sees the wheels rotating through the
+// gaps - the sculpted STLs' blank drum gave nothing to read motion from.
+void buildSpokedWheel(MeshBuilder& mb, float r, float hw) {
+    const Col tire(0.065f, 0.065f, 0.075f, 1);
+    const Col rim(0.58f, 0.60f, 0.63f, 1);
+    const Col dark(0.09f, 0.09f, 0.10f, 1);
+    mb.cylinder(V3(0, -hw, 0), V3(0, hw, 0), r, r, 24, tire, false, false);
+    for (int s : {-1, 1}) {
+        const float k = float(s);
+        annulusY(mb, k * hw, r * 0.72f, r, 24, tire, s);        // sidewall
+        discY(mb, k * (hw - 1.2f), r * 0.72f, 24, dark, s);     // recessed backdrop
+        // spokes: thin boxes running hub -> rim, proud of the backdrop
+        const float w = r * 0.085f;                 // spoke half-width
+        const float y0 = k * (hw - 1.2f), y1 = k * (hw - 0.35f);
+        for (int i = 0; i < 6; i++) {
+            const float a = float(i) / 6 * 2 * (float)M_PI;
+            const V3 u(std::cos(a), 0, std::sin(a));
+            const V3 v(-std::sin(a), 0, std::cos(a));
+            const float rIn = r * 0.26f, rOut = r * 0.72f;
+            auto P = [&](float rad, float e, float y) {
+                return V3(u.x * rad + v.x * e * w, y, u.z * rad + v.z * e * w);
+            };
+            const V3 nu(u.x, 0, u.z), nv(v.x, 0, v.z), ny(0, k, 0);
+            mb.quadOriented(P(rOut, -1, y0), P(rOut, 1, y0), P(rOut, 1, y1), P(rOut, -1, y1), nu, rim);
+            mb.quadOriented(P(rIn, 1, y0), P(rIn, -1, y0), P(rIn, -1, y1), P(rIn, 1, y1), -nu, rim);
+            mb.quadOriented(P(rIn, 1, y0), P(rOut, 1, y0), P(rOut, 1, y1), P(rIn, 1, y1), nv, rim);
+            mb.quadOriented(P(rOut, -1, y0), P(rIn, -1, y0), P(rIn, -1, y1), P(rOut, -1, y1), -nv, rim);
+            mb.quadOriented(P(rIn, -1, y1), P(rOut, -1, y1), P(rOut, 1, y1), P(rIn, 1, y1), ny, rim);
+            mb.quadOriented(P(rIn, 1, y0), P(rOut, 1, y0), P(rOut, -1, y0), P(rIn, -1, y0), -ny, rim);
+        }
+        discY(mb, k * (hw - 0.35f), r * 0.26f, 12, rim, s);      // hub cap
+    }
+}
+
+bool buildDominusWheels(MeshBuilder& front, MeshBuilder& back,
+                        WheelMount mounts[4], const std::string& modelDir) {
+    (void)modelDir;   // fully procedural: no STL dependency
+    // Arch centers via the body transform of the sculpted hubs; radius =
+    // the sculpt tire's vertical half-extent (so the tread grounds exactly
+    // on D_GROUND and fills the arch like the source), width = its axle
+    // half-thickness.
+    const float archF = (1.106f - DYMIN) * DK + DXREAR;
+    const float archR = (-1.438f - DYMIN) * DK + DXREAR;
+    const float rF = 14.4f, hwF = 7.8f;
+    const float rR = 16.0f, hwR = 6.9f;
+    const float latF = 0.874f * DK, latR = 1.079f * DK;   // sculpted hub offsets
+
+    mounts[0] = {V3(archF,  latF, D_GROUND + rF), rF, true};
+    mounts[1] = {V3(archF, -latF, D_GROUND + rF), rF, true};
+    mounts[2] = {V3(archR,  latR, D_GROUND + rR), rR, false};
+    mounts[3] = {V3(archR, -latR, D_GROUND + rR), rR, false};
+
+    buildSpokedWheel(front, rF, hwF);
+    buildSpokedWheel(back, rR, hwR);
+    return !front.verts.empty() && !back.verts.empty();
+}
+
+// Fennec wheels: procedural spoked wheels (same builder as the Dominus),
+// mounted at the body's arch centers. The arch centers come from the model:
+// front at X=51.25, rear at Y=-15.95, re-mapped with the body transform so
+// resizing/repositioning the shell cannot leave the wheels behind.
 bool buildFennecWheels(MeshBuilder& front, MeshBuilder& back,
                        WheelMount mounts[4], const std::string& modelDir) {
-    std::vector<float> wf, wr;
-    if (!readStl(modelDir + "/front_wheel.stl", wf)) return false;
-    if (!readStl(modelDir + "/rear_wheel.stl", wr)) return false;
-
+    (void)modelDir;   // fully procedural: no STL dependency
     const float rF = 19.5f / 2 * FK, rR = 22.0f / 2 * FK;
     const float lat = 26.2f;
-    // The body arches are centered at model X=51.25 (front) and -33.75
-    // (rear). Re-map those centers with the same transform as the body so
-    // resizing/repositioning the shell cannot leave the wheels behind.
     const float frontX = (51.25f - FGY) * FK + FBACK;
-    // The rear arch center is at model Y=-15.95 (the old calibration's
-    // -46uu mount maps back to this STL coordinate).
     const float rearX = (-15.95f - FGY) * FK + FBACK;
     const V3 mF(frontX, 0, CAR_GROUND + rF);
     const V3 mR(rearX, 0, CAR_GROUND + rR);
-    const float cFx = -92.99f, cFy = 42.35f;   // print-layout centers
-    const float cRx = -84.9f, cRy = -3.99f;
 
     mounts[0] = {V3(mF.x,  lat, mF.z), rF, true};
     mounts[1] = {V3(mF.x, -lat, mF.z), rF, true};
     mounts[2] = {V3(mR.x,  lat, mR.z), rR, false};
     mounts[3] = {V3(mR.x, -lat, mR.z), rR, false};
 
-    // The mesh must stay CENTERED at the origin: the renderer translates it to
-    // the mount and spins it about its own axle. Baking the mount in here would
-    // double the offset and make the wheels orbit the car instead of spinning.
-    auto wheelXf = [](const V3& p, float cx, float cy, int side) {
-        float dx = p.x - cx, dy = p.y - cy, dz = p.z - 5.095f;
-        float x = dx, y = -dz, z = dy;      // stand up: axle Z -> Y
-        if (side < 0) { x = -x; y = -y; }   // far side: 180 deg about Z
-        return V3(x * FK, y * FK, z * FK);
-    };
-    auto wheelCol = [](float r) {
-        return [r](const V3& p, const V3&) {
-            // centered mesh: radial distance from the axle (Y axis)
-            float rad = std::sqrt(p.x * p.x + p.z * p.z);
-            if (rad > 0.85f * r) return Col(0.065f, 0.065f, 0.075f, 1);  // tire
-            if (rad > 0.30f * r) return Col(0.58f, 0.60f, 0.63f, 1);     // rim
-            return Col(0.17f, 0.18f, 0.20f, 1);                          // hub
-        };
-    };
-
-    for (int s = 1; s >= -1; s -= 2) {
-        appendStl(wf, front,
-                  [&](const V3& p) { return wheelXf(p, cFx, cFy, s); },
-                  wheelCol(rF));
-        appendStl(wr, back,
-                  [&](const V3& p) { return wheelXf(p, cRx, cRy, s); },
-                  wheelCol(rR));
-    }
+    buildSpokedWheel(front, rF, 6.0f);
+    buildSpokedWheel(back, rR, 6.5f);
     return !front.verts.empty() && !back.verts.empty();
 }
 
 }  // namespace
 
-bool GameAssets::build(const std::string& meshDir, const std::string& modelDir) {
+bool GameAssets::build(const std::string& meshDir, const std::string& modelDir,
+                       int car) {
     {
         MeshBuilder mb;
         buildArenaFloor(mb);
@@ -488,14 +560,20 @@ bool GameAssets::build(const std::string& meshDir, const std::string& modelDir) 
     }
     {
         MeshBuilder mb;
-        // Thingiverse Fennec model; falls back to the procedural body if the
-        // files are missing (keeps fresh/partial checkouts playable).
-        if (!buildFennecBody(mb, modelDir)) buildCarBody(mb);
+        // Car body per the Car Body setting: Dominus (Sketchfab low-poly fanart)
+        // or the Thingiverse Fennec, each with a procedural fallback if its
+        // STLs are missing (keeps fresh/partial checkouts playable).
+        if (car == 1)
+            buildDominusBody(mb, modelDir);
+        if (mb.verts.empty() && !buildFennecBody(mb, modelDir)) buildCarBody(mb);
         carBody.upload(mb.verts, mb.idx);
     }
     {
         MeshBuilder mbF, mbB;
-        if (!buildFennecWheels(mbF, mbB, wheelMounts, modelDir)) {
+        bool wheels = false;
+        if (car == 1)
+            wheels = buildDominusWheels(mbF, mbB, wheelMounts, modelDir);
+        if (!wheels && !buildFennecWheels(mbF, mbB, wheelMounts, modelDir)) {
             buildWheel(mbF, 12.5f, 6.0f);
             buildWheel(mbB, 15.0f, 6.5f);
             wheelMounts[0] = {V3(51.25f, 25.90f, -4.5f), 12.5f, true};

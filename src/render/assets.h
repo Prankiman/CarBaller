@@ -40,6 +40,7 @@ struct GameAssets {
 
     Texture2D ballTex;
 
-    bool build(const std::string& meshDir, const std::string& modelDir);
+    bool build(const std::string& meshDir, const std::string& modelDir,
+               int carBody = 0);  // 0 = Fennec (Octane hitbox), 1 = Dominus
     void destroy();
 };

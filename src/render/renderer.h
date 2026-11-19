@@ -22,8 +22,15 @@ struct RenderParams {
 
 class Renderer {
 public:
-    bool init(const std::string& meshDir, const std::string& modelDir);
+    bool init(const std::string& meshDir, const std::string& modelDir,
+              int carBody = 0);
     void shutdown();
+
+    // Re-run the asset builds after a Car Body switch (Car Body setting):
+    // destroys and rebuilds the default-arena meshes, car body and wheels.
+    // Custom-map meshes, shaders and hitbox outlines are untouched.
+    void rebuildAssets(const std::string& meshDir, const std::string& modelDir,
+                       int carBody);
 
     // Hitbox outline geometry (Settings > Graphics > Show Hitboxes).
     // carSize/carOffset: the physics box in car-local uu (RocketSim config);
