@@ -121,12 +121,19 @@ struct SoundSettings {
     float volume = 0.7f;        // 0..1 master SFX volume
 };
 
+struct MiscSettings {
+    bool stickOverlay = false;   // BakkesMod-style left-stick trail overlay
+    int stickTrail = 180;        // samples shown (sampled at 120 Hz)
+    int stickOverlaySize = 300;  // overlay square size in pixels
+};
+
 struct Settings {
     CameraSettings cam;
     ControlSettings ctrl;
     FreeplaySettings freeplay;
     GraphicsSettings gfx;
     SoundSettings sound;
+    MiscSettings misc;
     // Defaults, not empty: a first run with no settings.json yet, or a file
     // with no bindings block in it, has to leave the player with working
     // controls - an empty map meant nothing was bound at all, menu included

@@ -282,13 +282,20 @@ float InputSystem::value(Action a) const { return value_[int(a)]; }
 
 void InputSystem::leftStick(float& x, float& y) const {
     float sx = 0, sy = 0;
+    rawLeftStick(sx, sy);
+    applyDeadzone(sx, sy, x, y);
+}
+
+void InputSystem::rawLeftStick(float& x, float& y) const {
+    float sx = 0, sy = 0;
     for (auto* gc : controllers_) {
         float ax = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTX) / 32767.0f;
         float ay = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTY) / 32767.0f;
         if (std::fabs(ax) > std::fabs(sx)) sx = ax;
         if (std::fabs(ay) > std::fabs(sy)) sy = ay;
     }
-    applyDeadzone(sx, sy, x, y);
+    x = sx;
+    y = sy;
 }
 
 void InputSystem::rawTrigger(float& rt, float& lt) const {

@@ -43,6 +43,8 @@ public:
 
     // Processed left stick (deadzone + sensitivity), for building CarControls
     void leftStick(float& x, float& y) const;
+    // Raw left stick, BEFORE any deadzone/shape processing (stick overlay).
+    void rawLeftStick(float& x, float& y) const;
     void rawTrigger(float& rt, float& lt) const;
 
     // Fill RocketSim controls from current input.

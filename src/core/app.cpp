@@ -7,8 +7,10 @@
 #include <backends/imgui_impl_sdl2.h>
 #include <imgui_internal.h>  // ImGui::GetActiveID for the menu click sound
 
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
+#include <cmath>
 #include <filesystem>
 #include <memory>
 #include <thread>
@@ -55,6 +57,14 @@ struct Toast {
     bool error = false; // red instead of neutral
 };
 
+// One sampled position for the overlay trail: the stick value AFTER the
+// deadzone/shape processing - i.e. what the car actually receives. Cross and
+// Square outputs can reach the square's corners; Circle stays inside radius 1.
+struct StickPoint {
+    float x = 0, y = 0;     // processed stick, each in [-1,1]; +y = down
+    bool dead = true;       // output is neutral (inside the deadzone: green)
+};
+
 struct App {
     Settings settings;
     InputSystem input;
@@ -89,7 +99,73 @@ struct App {
     std::unique_ptr<MapJob> mapJob;     // parse in flight (worker thread)
     std::vector<Toast> toasts;          // top-right status/error messages
 
+    // ---- stick overlay trail (sampled while the overlay is enabled)
+    std::vector<StickPoint> stickTrail;
+    float stickSampleAccum = 0;
 };
+
+// BakkesMod "Joystick Visualization"-style overlay (bakkesplugins #516): a
+// square for the stick's full range with a trail of the most recent PROCESSED
+// inputs (post deadzone/shape) - small square points joined by thin lines,
+// white normally and green while the output is neutral (in the deadzone), the
+// newest point drawn larger. Because it is the output, a Cross/Square deadzone
+// shows its characteristic straight axis runs and the trail can reach the
+// square's corners, while Circle stays inside radius 1.
+void drawStickOverlay(const MiscSettings& misc,
+                      const std::vector<StickPoint>& trail, int dw, int dh) {
+    const float S = float(std::max(150, std::min(600, misc.stickOverlaySize)));
+    // Sit above the ball-cam indicator HUD widget (bottom-left, ~70px tall).
+    ImGui::SetNextWindowPos(ImVec2(12.0f, float(dh) - 78.0f), ImGuiCond_Always,
+                            ImVec2(0.0f, 1.0f));
+    ImGui::SetNextWindowBgAlpha(0.0f);
+    const ImGuiWindowFlags flags =
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
+        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoBackground;
+    if (!ImGui::Begin("##stickoverlay", nullptr, flags)) {
+        ImGui::End();
+        return;
+    }
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 c(p.x + S * 0.5f, p.y + S * 0.5f);
+    const float half = S * 0.5f;
+
+    // Box: barely tinted so it reads on any background, light frame.
+    dl->AddRectFilled(p, ImVec2(p.x + S, p.y + S), IM_COL32(10, 12, 16, 70), 2);
+    dl->AddRect(p, ImVec2(p.x + S, p.y + S), IM_COL32(190, 195, 210, 190), 2);
+
+    const ImU32 colIn = IM_COL32(235, 238, 248, 235);   // outside deadzone: white
+    const ImU32 colDead = IM_COL32(48, 235, 88, 235);   // inside: green
+    const float pt = std::max(2.0f, S * 0.012f);        // point half-size
+
+    // SDL reports left-stick Y as down-positive; the screen also grows
+    // downward, so the raw y maps straight through (+y down = push down).
+    auto toPx = [&](const StickPoint& s) {
+        return ImVec2(c.x + s.x * half, c.y + s.y * half);
+    };
+
+    // trails: thin lines first, then square points, newest last/largest
+    for (size_t i = 1; i < trail.size(); i++) {
+        const ImU32 lc = trail[i].dead ? IM_COL32(48, 235, 88, 110)
+                                       : IM_COL32(220, 224, 235, 110);
+        dl->AddLine(toPx(trail[i - 1]), toPx(trail[i]), lc, 1.0f);
+    }
+    for (size_t i = 0; i < trail.size(); i++) {
+        const bool newest = (i + 1 == trail.size());
+        const float s = newest ? pt * 1.8f : pt;
+        const ImVec2 q = toPx(trail[i]);
+        dl->AddRectFilled(ImVec2(q.x - s, q.y - s), ImVec2(q.x + s, q.y + s),
+                          trail[i].dead ? colDead : colIn);
+    }
+
+    ImGui::Dummy(ImVec2(S, S));
+    ImGui::PopStyleVar();
+    ImGui::End();
+}
 
 // Top-right notification stack. Failures are what the user most needs to see
 // (a bad path otherwise just silently drops them back in the default arena).
@@ -767,6 +843,40 @@ int runApp(int argc, char** argv) {
 
         a.hud.draw(snap, a.cam, a.renderer, a.settings, a.sim, dw, dh, fpsSmoothed,
                    a.statsVisible, a.menuOpen);
+
+        // BakkesMod-style stick overlay (bottom left): sample the left stick at
+        // a fixed 120 Hz, run it through the deadzone/shape math, and keep the
+        // most recent OUTPUT values as a trail. Drawn even while the menu is
+        // open, so deadzone sliders can be tuned live.
+        if (a.settings.misc.stickOverlay) {
+            constexpr float kSampleHz = 120.0f;
+            const int maxPts = std::max(20, std::min(400, a.settings.misc.stickTrail));
+            float rx = 0, ry = 0;
+            a.input.rawLeftStick(rx, ry);
+            rx = clampf(rx, -1.0f, 1.0f);
+            ry = clampf(ry, -1.0f, 1.0f);
+            float ox = 0, oy = 0;
+            applyDeadzoneShape(a.settings.ctrl.deadzone, a.settings.ctrl.deadzoneShape,
+                               rx, ry, ox, oy);
+            ox = clampf(ox, -1.0f, 1.0f);
+            oy = clampf(oy, -1.0f, 1.0f);
+            // plot the OUTPUT (post-deadzone), so the shape's effect is visible
+            const StickPoint sp{ox, oy,
+                                std::fabs(ox) < 1e-4f && std::fabs(oy) < 1e-4f};
+            a.stickSampleAccum += gdt;
+            for (int budget = 8; a.stickSampleAccum >= 1.0f / kSampleHz && budget > 0;
+                 budget--) {
+                a.stickSampleAccum -= 1.0f / kSampleHz;
+                a.stickTrail.push_back(sp);
+            }
+            if ((int)a.stickTrail.size() > maxPts)
+                a.stickTrail.erase(a.stickTrail.begin(),
+                                   a.stickTrail.end() - maxPts);
+            drawStickOverlay(a.settings.misc, a.stickTrail, dw, dh);
+        } else {
+            a.stickTrail.clear();
+            a.stickSampleAccum = 0;
+        }
 
         // ---------------- toasts (top-right, over everything)
         for (size_t i = 0; i < a.toasts.size();) {

@@ -3,6 +3,7 @@
 #include "../core/math.h"
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <fstream>
 
 using nlohmann::json;
@@ -148,6 +149,12 @@ bool Settings::save(const std::string& path) const {
     j["sound"] = {
         {"volume", sound.volume},
     };
+    j["misc"] = {
+        {"stickOverlay", misc.stickOverlay},
+        {"stickTrail", misc.stickTrail},
+        {"stickOverlaySize", misc.stickOverlaySize},
+    };
+
     json jb;
     for (auto& [a, list] : binds.binds) {
         json arr = json::array();
@@ -226,6 +233,14 @@ bool Settings::load(const std::string& path) {
         sound.volume = c.value("volume", sound.volume);
         if (sound.volume < 0.0f) sound.volume = 0.0f;
         if (sound.volume > 1.0f) sound.volume = 1.0f;
+    }
+    if (j.contains("misc")) {
+        auto& c = j["misc"];
+        misc.stickOverlay = c.value("stickOverlay", misc.stickOverlay);
+        misc.stickTrail = c.value("stickTrail", misc.stickTrail);
+        misc.stickOverlaySize = c.value("stickOverlaySize", misc.stickOverlaySize);
+        misc.stickTrail = std::max(20, std::min(400, misc.stickTrail));
+        misc.stickOverlaySize = std::max(150, std::min(600, misc.stickOverlaySize));
     }
     if (j.contains("bindings")) {
         // binds already starts at the defaults (Settings::binds), so an action

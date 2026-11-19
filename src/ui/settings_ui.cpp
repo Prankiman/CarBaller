@@ -416,6 +416,54 @@ void drawGarageTab(FreeplaySettings& f, bool& changed, bool& entryOpen) {
     f.carBody = car;
 }
 
+void drawToolsTab(MiscSettings& m, bool& changed, bool& entryOpen) {
+    (void)entryOpen;
+    ImGui::SeparatorText("Joystick Visualization");
+    check("Show Visualization", &m.stickOverlay, changed,
+          "BakkesMod-style joystick visualization (bakkesplugins.com/plugin/516) "
+          "in the bottom-left corner: a square for the stick's full range with a "
+          "trail of your most recent left-stick OUTPUT - the value after the "
+          "deadzone shape is applied, i.e. what the car actually receives - as "
+          "square points joined by thin lines. Cross and Square outputs can "
+          "reach the square's corners; Circle stays inside radius 1. Points are "
+          "green while the output is neutral (deadzone); the newest is larger. "
+          "It also shows while the menu is open, so you can tune the deadzone "
+          "against it live.");
+
+    ImGui::BeginDisabled(!m.stickOverlay);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Number of Inputs to Visualize");
+    ImGui::SameLine();
+    ImGui::PushItemWidth(-FLT_MIN);
+    if (ImGui::SliderInt("##stickTrail", &m.stickTrail, 20, 400, "%d",
+                         ImGuiSliderFlags_AlwaysClamp))
+        changed = true;
+    if (typedValuePopup("##stickTrail", &m.stickTrail, 20, 400, entryOpen))
+        changed = true;
+    ImGui::PopItemWidth();
+    ImGui::SetItemTooltip("How many recent inputs the trail keeps (sampled at "
+                          "120 Hz). Right-click the slider to type the value in.");
+
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Visualization Size");
+    ImGui::SameLine();
+    ImGui::PushItemWidth(-FLT_MIN);
+    if (ImGui::SliderInt("##stickSize", &m.stickOverlaySize, 150, 600, "%d px",
+                         ImGuiSliderFlags_AlwaysClamp))
+        changed = true;
+    if (typedValuePopup("##stickSize", &m.stickOverlaySize, 150, 600, entryOpen))
+        changed = true;
+    ImGui::PopItemWidth();
+    ImGui::SetItemTooltip("Size of the overlay square. Right-click the slider "
+                          "to type the value in.");
+    ImGui::EndDisabled();
+
+    ImGui::TextDisabled(
+        "White points = outside the deadzone, green = inside it.\n"
+        "The square border is full stick deflection; the newest input is larger.\n"
+        "Plotted values are post-deadzone: Cross/Square can reach the corners.");
+}
+
 void drawGraphicsTab(GraphicsSettings& g, bool& changed, bool& entryOpen) {
     check("VSync", &g.vsync, changed,
           "Synchronize frames to the display refresh rate.");
@@ -665,6 +713,12 @@ bool SettingsUI::draw(Settings& settings, InputSystem& input, bool* pOpen, MapTa
         if (ImGui::BeginTabItem("Bindings")) {
             ImGui::PushID("Bindings");
             drawBindingsTab(settings, input, changed);
+            ImGui::PopID();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Tools")) {
+            ImGui::PushID("Tools");
+            drawToolsTab(settings.misc, changed, entryOpen);
             ImGui::PopID();
             ImGui::EndTabItem();
         }
