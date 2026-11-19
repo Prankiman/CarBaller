@@ -172,6 +172,86 @@ void capturePlaceholder() {
 // Tabs
 // ------------------------------------------------------------------------
 
+// Small visual of what a deadzone shape does: the device square, the dead
+// region (plus / circle / box), and a 5x5 grid of sample inputs, each joined
+// by a line to where it maps after the deadzone + rescale. Clicking selects
+// the shape. Uses the real applyDeadzoneShape() math, so the picture and the
+// stick's actual response can never drift apart.
+void deadzoneDiagram(const char* id, const char* label, int shape, float dz,
+                     int* cur, bool& changed, const char* tip) {
+    const float S = 104.0f;
+    ImGui::BeginGroup();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton(id, ImVec2(S, S));
+    const bool hovered = ImGui::IsItemHovered();
+    if (ImGui::IsItemClicked()) {
+        *cur = shape;
+        changed = true;
+    }
+    if (tip) ImGui::SetItemTooltip("%s", tip);
+
+    const bool selected = (*cur == shape);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 c(p.x + S * 0.5f, p.y + S * 0.5f);
+    const float half = S * 0.5f - 5.0f;
+
+    dl->AddRectFilled(p, ImVec2(p.x + S, p.y + S), IM_COL32(20, 22, 30, 225), 5);
+    if (selected)
+        dl->AddRect(p, ImVec2(p.x + S, p.y + S), IM_COL32(90, 160, 245, 255), 5, 0, 2.0f);
+    else if (hovered)
+        dl->AddRect(p, ImVec2(p.x + S, p.y + S), IM_COL32(130, 140, 160, 255), 5);
+    else
+        dl->AddRect(p, ImVec2(p.x + S, p.y + S), IM_COL32(70, 74, 86, 255), 5);
+
+    // full-range square + crosshair
+    dl->AddRect(ImVec2(c.x - half, c.y - half), ImVec2(c.x + half, c.y + half),
+                IM_COL32(80, 86, 100, 160));
+    const ImU32 grid = IM_COL32(96, 102, 118, 110);
+    dl->AddLine(ImVec2(c.x - half, c.y), ImVec2(c.x + half, c.y), grid);
+    dl->AddLine(ImVec2(c.x, c.y - half), ImVec2(c.x, c.y + half), grid);
+
+    // dead region
+    const float r = clampf(dz, 0.0f, 1.0f) * half;
+    const ImU32 deadFill = IM_COL32(255, 255, 255, 30);
+    const ImU32 deadLine = IM_COL32(215, 220, 235, 170);
+    if (shape == DeadzoneCircle) {
+        dl->AddCircleFilled(c, r, deadFill, 48);
+        dl->AddCircle(c, r, deadLine, 48);
+    } else if (shape == DeadzoneSquare) {
+        dl->AddRectFilled(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), deadFill);
+        dl->AddRect(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), deadLine);
+    } else {
+        dl->AddRectFilled(ImVec2(c.x - r, c.y - half), ImVec2(c.x + r, c.y + half), deadFill);
+        dl->AddRectFilled(ImVec2(c.x - half, c.y - r), ImVec2(c.x + half, c.y + r), deadFill);
+    }
+
+    // sample inputs -> mapped outputs
+    const ImU32 inCol = IM_COL32(150, 155, 170, 170);
+    const ImU32 outCol = IM_COL32(100, 190, 255, 235);
+    for (int iy = 0; iy < 5; iy++) {
+        for (int ix = 0; ix < 5; ix++) {
+            const float sx = float(ix) * 0.5f - 1.0f;
+            const float sy = float(iy) * 0.5f - 1.0f;   // positive = up
+            float ox = 0, oy = 0;
+            applyDeadzoneShape(dz, shape, sx, sy, ox, oy);
+            const ImVec2 pin(c.x + sx * half, c.y - sy * half);
+            const ImVec2 pout(c.x + ox * half, c.y - oy * half);
+            if (std::fabs(sx) > 0.01f || std::fabs(sy) > 0.01f)
+                dl->AddLine(pin, pout, inCol, 1.0f);
+            dl->AddCircleFilled(pin, 1.4f, inCol, 6);
+            dl->AddCircleFilled(pout, 2.2f, outCol, 8);
+        }
+    }
+
+    // centered caption
+    const float tw = ImGui::CalcTextSize(label).x;
+    ImGui::SetCursorScreenPos(ImVec2(p.x + (S - tw) * 0.5f, p.y + S + 3.0f));
+    if (selected) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.72f, 1.0f, 1.0f));
+    ImGui::TextUnformatted(label);
+    if (selected) ImGui::PopStyleColor();
+    ImGui::EndGroup();
+}
+
 void drawCameraTab(CameraSettings& c, bool& changed, bool& entryOpen) {
     // RL order (Liquipedia/Epic): shake first, then FOV, Height, Angle,
     // Distance, Stiffness, Swivel Speed, Transition Speed.
@@ -273,6 +353,27 @@ void drawControlsTab(ControlSettings& c, bool& changed, bool& entryOpen) {
         c.deadzoneShape = DeadzoneCircle;
         changed = true;
     }
+
+    // Live scale diagrams: dead region (white) and a grid of sample stick
+    // positions (gray) drawn to where they map after the deadzone (blue).
+    int shape = c.deadzoneShape;
+    deadzoneDiagram("##dzCross", "Cross", DeadzoneCross, c.deadzone, &shape,
+                    changed,
+                    "Cross: each axis is deadzoned on its own, so the dead "
+                    "region is a plus shape and diagonals come out strong.");
+    ImGui::SameLine();
+    deadzoneDiagram("##dzSquare", "Square", DeadzoneSquare, c.deadzone, &shape,
+                    changed,
+                    "Square: one box-shaped deadzone for the whole stick vector, "
+                    "scaled by a single factor - the input direction is kept "
+                    "exactly.");
+    ImGui::SameLine();
+    deadzoneDiagram("##dzCircle", "Circle", DeadzoneCircle, c.deadzone, &shape,
+                    changed,
+                    "Circle: a radial deadzone - direction kept and the output "
+                    "capped, so diagonals never outrun straight pushes.");
+    c.deadzoneShape = shape;
+    ImGui::TextDisabled("Dead region in white; gray = stick input, blue = what the car gets.");
 
     check("Controller Vibration", &c.vibration, changed,
           "Rumble on boost activation, ball impacts and hard landings (requires a "
