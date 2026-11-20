@@ -58,8 +58,8 @@ struct Toast {
 };
 
 // One sampled position for the overlay trail: the stick value AFTER the
-// deadzone/shape processing - i.e. what the car actually receives. Cross and
-// Square outputs can reach the square's corners; Circle stays inside radius 1.
+// deadzone/shape processing - i.e. what the car actually receives. Square
+// reaches the corners; Cross and Circle stay inside radius 1.
 struct StickPoint {
     float x = 0, y = 0;     // processed stick, each in [-1,1]; +y = down
     bool dead = true;       // output is neutral (inside the deadzone: green)
@@ -108,9 +108,9 @@ struct App {
 // square for the stick's full range with a trail of the most recent PROCESSED
 // inputs (post deadzone/shape) - small square points joined by thin lines,
 // white normally and green while the output is neutral (in the deadzone), the
-// newest point drawn larger. Because it is the output, a Cross/Square deadzone
-// shows its characteristic straight axis runs and the trail can reach the
-// square's corners, while Circle stays inside radius 1.
+// newest point drawn larger. Because it is the output, Square shows the
+// characteristic diagonal runs out to the corners while Cross (circular with
+// an inner cross) and Circle stay inside radius 1.
 void drawStickOverlay(const MiscSettings& misc,
                       const std::vector<StickPoint>& trail, int dw, int dh) {
     const float S = float(std::max(150, std::min(600, misc.stickOverlaySize)));

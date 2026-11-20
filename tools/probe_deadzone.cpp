@@ -2,12 +2,12 @@
 // "Deadzone Shape" math (src/input/input.cpp) - for all three shapes across
 // the stick range, and pins down the properties that make them different:
 //
-//   cross   (RL default) per-axis: each component is deadzoned and rescaled
-//           on its own, so a component inside the deadzone drops out while
-//           the other passes through, and the vector is pulled towards the
-//           dominant axis.
-//   square  the SAME box-shaped neutral region, but one uniform scale for
-//           the whole vector, so the stick's direction survives exactly.
+//   cross   (RL default) a CIRCULAR boundary with RL's inner cross: each
+//           component is deadzoned on its own first (near-axis pushes snap to
+//           the axis), then the surviving vector is rescaled radially, so
+//           direction is kept and |out| stays <= 1.
+//   square  each axis is deadzoned and rescaled on its own, stretching the
+//           input out to the square's corners - diagonals reach full throw.
 //   circle  radial: direction survives and the output magnitude is capped at
 //           1, so a diagonal can never outrun a straight push.
 //
@@ -94,8 +94,9 @@ int main() {
         check(same, "one-axis input is shape-independent", d);
     }
 
-    // ---- 4. direction: square and circle keep the stick's angle exactly,
-    // cross pulls it towards the dominant axis. (0.9, 0.3) = 18.43 deg.
+    // ---- 4. direction: cross and circle keep the stick's angle exactly,
+    // square pulls it towards the dominant axis by stretching both axes to
+    // full throw independently. (0.9, 0.3) = 18.43 deg.
     {
         const float X = 0.9f, Y = 0.3f;
         float sqx, sqy, cix, ciy, crx, cry;
@@ -106,19 +107,20 @@ int main() {
         const float dCi = angDiff(X, Y, cix, ciy);
         const float dCr = angDiff(X, Y, crx, cry);
         char d[160];
-        std::snprintf(d, sizeof d, "angle error: square %.3f, circle %.3f, cross %.2f deg",
+        std::snprintf(d, sizeof d, "angle error: square %.2f, circle %.3f, cross %.3f deg",
                       dSq, dCi, dCr);
-        check(dSq < 0.01f && dCi < 0.01f && dCr > 1.0f,
-              "square+circle preserve direction, cross pulls to the axis", d);
+        check(dSq > 1.0f && dCi < 0.01f && dCr < 0.01f,
+              "cross+circle preserve direction, square pulls to the axis", d);
         std::printf("      (0.9,0.3) -> cross (%.3f,%.3f) | square (%.3f,%.3f)"
                     " | circle (%.3f,%.3f)\n",
                     crx, cry, sqx, sqy, cix, ciy);
     }
 
     // ---- 5. full sweep: no NaN, no component past +-1, magnitudes inside
-    // what each shape is defined to produce (circle <= 1, box shapes <= sqrt2).
+    // what each shape is defined to produce (cross/circle <= 1, square can
+    // reach the square's corner at sqrt2).
     {
-        bool bounds = true, circleCap = true;
+        bool bounds = true, radialCap = true;
         for (float dz : {0.0f, 0.20f, 0.75f}) {
             for (int s : kShapes) {
                 for (int i = -10; i <= 10; i++) {
@@ -130,15 +132,15 @@ int main() {
                             std::fabs(ox) > 1.00001f || std::fabs(oy) > 1.00001f)
                             bounds = false;
                         const float m = mag(ox, oy);
-                        if (s == DeadzoneCircle && m > 1.00001f) circleCap = false;
-                        if (s != DeadzoneCircle && m > 1.4143f) bounds = false;
+                        if (s != DeadzoneSquare && m > 1.00001f) radialCap = false;
+                        if (s == DeadzoneSquare && m > 1.4143f) bounds = false;
                     }
                 }
             }
         }
         check(bounds, "21x21 sweep x 3 dz x 3 shapes: finite, |component| <= 1",
               "no NaN, no boosted component");
-        check(circleCap, "circle output magnitude stays <= 1 everywhere",
+        check(radialCap, "cross/circle output magnitude stays <= 1 everywhere",
               "|out| capped");
     }
 
@@ -154,60 +156,74 @@ int main() {
               "ox=1.0");
     }
 
-    // ---- 7. deadzone 0.00: box shapes are the identity. Circle is the
-    // identity too while the stick is inside the unit circle - but it keeps
+    // ---- 7. deadzone 0.00: square is the identity. Cross and circle are the
+    // identity too while the stick is inside the unit circle - but they keep
     // normalising the CORNER of the square (|in| > 1) back down to magnitude
-    // 1, which is the whole point of a radial shape.
+    // 1, which is the whole point of their circular boundary.
     {
         bool ident = true, cap = true;
-        for (int s : {DeadzoneCross, DeadzoneSquare}) {
-            for (int i = -10; i <= 10; i += 2) {
-                for (int j = -10; j <= 10; j += 2) {
-                    const float x = i / 10.0f, y = j / 10.0f;
-                    float ox = 9, oy = 9;
-                    applyDeadzoneShape(0.0f, s, x, y, ox, oy);
-                    if (std::fabs(ox - x) > 1e-5f || std::fabs(oy - y) > 1e-5f)
-                        ident = false;
-                }
-            }
-        }
         for (int i = -10; i <= 10; i += 2) {
             for (int j = -10; j <= 10; j += 2) {
                 const float x = i / 10.0f, y = j / 10.0f;
                 float ox = 9, oy = 9;
-                applyDeadzoneShape(0.0f, DeadzoneCircle, x, y, ox, oy);
-                if (mag(x, y) <= 1.0f) {
-                    if (std::fabs(ox - x) > 1e-5f || std::fabs(oy - y) > 1e-5f)
-                        ident = false;
-                } else if (mag(ox, oy) > 1.00001f) {
-                    cap = false;
+                applyDeadzoneShape(0.0f, DeadzoneSquare, x, y, ox, oy);
+                if (std::fabs(ox - x) > 1e-5f || std::fabs(oy - y) > 1e-5f)
+                    ident = false;
+                for (int s : {DeadzoneCross, DeadzoneCircle}) {
+                    applyDeadzoneShape(0.0f, s, x, y, ox, oy);
+                    if (mag(x, y) <= 1.0f) {
+                        if (std::fabs(ox - x) > 1e-5f ||
+                            std::fabs(oy - y) > 1e-5f)
+                            ident = false;
+                    } else if (mag(ox, oy) > 1.00001f) {
+                        cap = false;
+                    }
                 }
             }
         }
         check(ident, "deadzone 0.00 passes the stick through untouched",
-              "out == in (circle: within the unit circle)");
-        check(cap, "deadzone 0.00, circle still folds the corner to |out| = 1",
+              "out == in (cross/circle: within the unit circle)");
+        check(cap, "deadzone 0.00, cross/circle fold the corner to |out| = 1",
               "(1,1) -> (0.707,0.707)");
     }
 
-    // ---- 8. the practical difference on an ASYMMETRIC push: cross crushes
-    // the minor axis (it is near the deadzone edge), square keeps it - the
-    // stick's direction is the thing square protects. Equal on a perfectly
-    // symmetric diagonal, where the two coincide by construction.
+    // ---- 8. the practical difference on an ASYMMETRIC push: square crushes
+    // the minor axis (each axis is rescaled on its own), while cross keeps the
+    // stick's direction on its circular boundary. Equal on a perfectly
+    // symmetric diagonal, where both never snap a component.
     {
         const float X = 0.9f, Y = 0.3f;
         float crx, cry, sqx, sqy;
         applyDeadzoneShape(DZ, DeadzoneCross, X, Y, crx, cry);
         applyDeadzoneShape(DZ, DeadzoneSquare, X, Y, sqx, sqy);
-        char d[128];
-        std::snprintf(d, sizeof d, "minor axis out: cross %.3f, square %.3f (in 0.30)",
-                      cry, sqy);
-        check(sqy > cry + 0.1f && std::fabs(sqx - crx) < 0.05f,
-              "square keeps the minor axis cross would crush", d);
+        char d[160];
+        std::snprintf(d, sizeof d,
+                      "minor axis out: cross %.3f, square %.3f (in 0.30); "
+                      "angle error cross %.2f, square %.2f",
+                      cry, sqy, angDiff(X, Y, crx, cry),
+                      angDiff(X, Y, sqx, sqy));
+        check(cry > sqy + 0.1f && angDiff(X, Y, crx, cry) < 0.01f &&
+                  angDiff(X, Y, sqx, sqy) > 1.0f,
+              "square crushes the minor axis cross keeps", d);
     }
 
-    std::printf("\nshapes: cross (default, per-axis) | square (box, direction-true)"
-                " | circle (radial, capped)\n");
+    // ---- 9. the inner cross: a near-axis push snaps to the axis under
+    // cross/square, while circle keeps the small off-axis component.
+    {
+        const float X = 0.80f, Y = 0.10f;   // y inside the deadzone
+        float crx, cry, sqx, sqy, cix, ciy;
+        applyDeadzoneShape(DZ, DeadzoneCross, X, Y, crx, cry);
+        applyDeadzoneShape(DZ, DeadzoneSquare, X, Y, sqx, sqy);
+        applyDeadzoneShape(DZ, DeadzoneCircle, X, Y, cix, ciy);
+        char d[128];
+        std::snprintf(d, sizeof d, "cross y=%.3f, square y=%.3f, circle y=%.3f",
+                      cry, sqy, ciy);
+        check(cry == 0.0f && sqy == 0.0f && ciy > 0.05f,
+              "near-axis snap is the inner cross (circle keeps it)", d);
+    }
+
+    std::printf("\nshapes: cross (circle boundary + inner cross) |"
+                " square (per-axis, corner-true) | circle (radial, capped)\n");
     std::printf("%s\n", failed ? "DEADZONE SHAPE REGRESSION" : "all deadzone shape checks ok");
     return failed ? 1 : 0;
 }

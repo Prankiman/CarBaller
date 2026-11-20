@@ -219,28 +219,29 @@ float applyDeadzoneShape(float dz, int shape, float x, float y, float& ox,
         return nl;
     }
 
-    // SQUARE: the deadzone is tested on the FURTHEST axis, so the neutral
-    // region is the box around the origin - same box cross uses - but then
-    // the whole vector is rescaled by ONE factor instead of per axis. That
-    // is the difference between the two: square keeps the stick's direction
-    // exactly (a half-tilted diagonal stays on that diagonal), while cross
-    // drops each component on its own and so pulls the vector towards
-    // whichever axis is further out. k <= 1 for every input inside the unit
-    // square, so this can only ever shrink a deflection, never boost it.
-    if (shape == DeadzoneSquare) {
-        const float d = std::fmax(std::fabs(x), std::fabs(y));
-        if (d <= dz) { ox = oy = 0; return 0; }
-        const float k = (d - dz) / ((1.0f - dz) * d);
-        ox = x * k;
-        oy = y * k;
-        return std::sqrt(ox * ox + oy * oy);
+    // CROSS (RL's default): a circular input boundary with RL's inner cross.
+    // Each axis is deadzoned on its own first, so a component sitting inside
+    // the deadzone snaps away and the input reads as a pure cardinal push -
+    // the plus-shaped "semi deadzone" (the same cross the old math drew).
+    // Whatever survives is then rescaled along its own ray, so the outer
+    // boundary stays circular: direction is kept and the output is capped at
+    // magnitude 1, meaning diagonals never outrun straight pushes.
+    if (shape == DeadzoneCross) {
+        const float cx = std::fabs(x) <= dz ? 0.0f : x;
+        const float cy = std::fabs(y) <= dz ? 0.0f : y;
+        const float l = std::sqrt(cx * cx + cy * cy);
+        if (l <= 0.0f) { ox = oy = 0; return 0; }
+        const float nl = clampf((l - dz) / (1.0f - dz), 0.0f, 1.0f);
+        ox = cx / l * nl;
+        oy = cy / l * nl;
+        return nl;
     }
 
-    // CROSS (RL's default): each axis is deadzoned and rescaled on its own,
-    // so the axes behave like the two members of a cross - a component
-    // sitting inside the deadzone drops out completely while the other one
-    // passes through untouched. Diagonals come out strong, because both
-    // axes are stretched to full throw independently.
+    // SQUARE: each axis is deadzoned and rescaled on its own, so the input is
+    // stretched out towards the square's corners - a half-tilted diagonal
+    // keeps climbing until both axes reach full throw. Diagonals therefore hit
+    // the same full magnitude as straight pushes. (This is the math Cross used
+    // to have; the neutral/snap region is the plus shape drawn in the menu.)
     auto dz1 = [&](float v) {
         float a = std::fabs(v);
         if (a <= dz) return 0.0f;

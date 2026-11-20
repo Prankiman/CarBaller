@@ -172,11 +172,11 @@ void capturePlaceholder() {
 // Tabs
 // ------------------------------------------------------------------------
 
-// Small visual of what a deadzone shape does: the device square, the dead
-// region (plus / circle / box), and a 5x5 grid of sample inputs, each joined
-// by a line to where it maps after the deadzone + rescale. Clicking selects
-// the shape. Uses the real applyDeadzoneShape() math, so the picture and the
-// stick's actual response can never drift apart.
+// Small visual of what a deadzone shape does: the device square, the dead /
+// axis-snap region, and a 5x5 grid of sample inputs, each joined by a line to
+// where it maps after the deadzone + rescale. Clicking selects the shape. Uses
+// the real applyDeadzoneShape() math, so the picture and the stick's actual
+// response can never drift apart.
 void deadzoneDiagram(const char* id, const char* label, int shape, float dz,
                      int* cur, bool& changed, const char* tip) {
     const float S = 104.0f;
@@ -210,19 +210,27 @@ void deadzoneDiagram(const char* id, const char* label, int shape, float dz,
     dl->AddLine(ImVec2(c.x - half, c.y), ImVec2(c.x + half, c.y), grid);
     dl->AddLine(ImVec2(c.x, c.y - half), ImVec2(c.x, c.y + half), grid);
 
-    // dead region
+    // dead region / axis-snap region
     const float r = clampf(dz, 0.0f, 1.0f) * half;
     const ImU32 deadFill = IM_COL32(255, 255, 255, 30);
     const ImU32 deadLine = IM_COL32(215, 220, 235, 170);
+    // The cross arms: a component inside the deadzone snaps to the axis, so
+    // that band is part of the neutral/snap region.
+    auto drawCrossArms = [&]() {
+        dl->AddRectFilled(ImVec2(c.x - r, c.y - half), ImVec2(c.x + r, c.y + half), deadFill);
+        dl->AddRectFilled(ImVec2(c.x - half, c.y - r), ImVec2(c.x + half, c.y + r), deadFill);
+    };
     if (shape == DeadzoneCircle) {
         dl->AddCircleFilled(c, r, deadFill, 48);
         dl->AddCircle(c, r, deadLine, 48);
-    } else if (shape == DeadzoneSquare) {
-        dl->AddRectFilled(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), deadFill);
-        dl->AddRect(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), deadLine);
+    } else if (shape == DeadzoneCross) {
+        // Circle one with the same inner cross: circular boundary + axis arms.
+        drawCrossArms();
+        dl->AddCircleFilled(c, r, deadFill, 48);
+        dl->AddCircle(c, r, deadLine, 48);
     } else {
-        dl->AddRectFilled(ImVec2(c.x - r, c.y - half), ImVec2(c.x + r, c.y + half), deadFill);
-        dl->AddRectFilled(ImVec2(c.x - half, c.y - r), ImVec2(c.x + half, c.y + r), deadFill);
+        // Square (per-axis): the dead/snap region is the cross itself.
+        drawCrossArms();
     }
 
     // sample inputs -> mapped outputs
@@ -330,14 +338,14 @@ void drawControlsTab(ControlSettings& c, bool& changed, bool& entryOpen) {
         ImGui::SetTooltip(
             "Rocket League's Deadzone Shape: how far the stick must move, and how "
             "the deflection is rescaled past it. RL's default is Cross.\n\n"
-            "Cross - each axis is deadzoned separately: a component inside the "
-            "deadzone drops out while the other one passes through, and diagonals "
-            "come out strong.\n"
-            "Square - the same box-shaped deadzone, but the whole stick vector is "
-            "scaled by one factor, so your direction through the deadzone is kept "
-            "exactly.\n"
-            "Circle - a radial deadzone: direction kept and output capped, so "
-            "diagonals never outrun straight pushes.");
+            "Cross - a circular boundary with RL's inner cross: each axis is "
+            "deadzoned on its own first (near-axis pushes snap to pure up/down/"
+            "left/right), then the surviving vector is rescaled radially. Diagonals "
+            "never outrun straight pushes.\n"
+            "Square - each axis is deadzoned and rescaled separately, so the input "
+            "stretches out to the square's corners and diagonals reach full throw.\n"
+            "Circle - a radial deadzone without the inner cross: direction kept and "
+            "output capped, so diagonals stay on the circle.");
     ImGui::SameLine();
     if (ImGui::RadioButton("Cross", c.deadzoneShape == DeadzoneCross)) {
         c.deadzoneShape = DeadzoneCross;
@@ -354,26 +362,28 @@ void drawControlsTab(ControlSettings& c, bool& changed, bool& entryOpen) {
         changed = true;
     }
 
-    // Live scale diagrams: dead region (white) and a grid of sample stick
-    // positions (gray) drawn to where they map after the deadzone (blue).
+    // Live scale diagrams: dead / axis-snap region (white) and a grid of
+    // sample stick positions (gray) drawn to where they map after the
+    // deadzone (blue).
     int shape = c.deadzoneShape;
     deadzoneDiagram("##dzCross", "Cross", DeadzoneCross, c.deadzone, &shape,
                     changed,
-                    "Cross: each axis is deadzoned on its own, so the dead "
-                    "region is a plus shape and diagonals come out strong.");
+                    "Cross: a circular boundary with the same inner cross - "
+                    "near-axis components snap to the axis, while diagonals stay "
+                    "on the circle and never outrun straight pushes.");
     ImGui::SameLine();
     deadzoneDiagram("##dzSquare", "Square", DeadzoneSquare, c.deadzone, &shape,
                     changed,
-                    "Square: one box-shaped deadzone for the whole stick vector, "
-                    "scaled by a single factor - the input direction is kept "
-                    "exactly.");
+                    "Square: each axis is deadzoned and rescaled separately, so "
+                    "diagonals stretch out to the square's corners and reach full "
+                    "throw.");
     ImGui::SameLine();
     deadzoneDiagram("##dzCircle", "Circle", DeadzoneCircle, c.deadzone, &shape,
                     changed,
                     "Circle: a radial deadzone - direction kept and the output "
                     "capped, so diagonals never outrun straight pushes.");
     c.deadzoneShape = shape;
-    ImGui::TextDisabled("Dead region in white; gray = stick input, blue = what the car gets.");
+    ImGui::TextDisabled("White = deadzone / axis snap; gray = stick input, blue = what the car gets.");
 
     check("Controller Vibration", &c.vibration, changed,
           "Rumble on boost activation, ball impacts and hard landings (requires a "
@@ -424,8 +434,8 @@ void drawToolsTab(MiscSettings& m, bool& changed, bool& entryOpen) {
           "in the bottom-left corner: a square for the stick's full range with a "
           "trail of your most recent left-stick OUTPUT - the value after the "
           "deadzone shape is applied, i.e. what the car actually receives - as "
-          "square points joined by thin lines. Cross and Square outputs can "
-          "reach the square's corners; Circle stays inside radius 1. Points are "
+          "square points joined by thin lines. Square can reach the square's "
+          "corners; Cross and Circle stay inside radius 1. Points are "
           "green while the output is neutral (deadzone); the newest is larger. "
           "It also shows while the menu is open, so you can tune the deadzone "
           "against it live.");
@@ -461,7 +471,7 @@ void drawToolsTab(MiscSettings& m, bool& changed, bool& entryOpen) {
     ImGui::TextDisabled(
         "White points = outside the deadzone, green = inside it.\n"
         "The square border is full stick deflection; the newest input is larger.\n"
-        "Plotted values are post-deadzone: Cross/Square can reach the corners.");
+        "Plotted values are post-deadzone: Square can reach the corners.");
 }
 
 void drawGraphicsTab(GraphicsSettings& g, bool& changed, bool& entryOpen) {

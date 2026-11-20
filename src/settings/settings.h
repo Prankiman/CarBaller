@@ -85,9 +85,9 @@ struct CameraSettings {
 // default (ours too). Numbering is fixed by saved configs: 1 has meant
 // circle since the option first shipped, so square takes 2.
 enum DeadzoneShape {
-    DeadzoneCross = 0,    // per-axis: each axis is deadzoned on its own
+    DeadzoneCross = 0,    // circular boundary + RL's inner cross (per-axis snap)
     DeadzoneCircle = 1,   // radial: dead circle, direction kept, |out| <= 1
-    DeadzoneSquare = 2,   // box deadzone, one uniform scale: direction kept
+    DeadzoneSquare = 2,   // per-axis deadzone + rescale: diagonals reach the corners
 };
 
 struct ControlSettings {
