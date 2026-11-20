@@ -135,9 +135,10 @@ struct M4 {
 
     // View matrix for RL's world: screen-right = cross(worldUp, viewDir),
     // screen-up ~= worldUp, view direction maps to -Z (OpenGL camera space).
-    static M4 viewRL(const V3& eye, const V3& target) {
+    static M4 viewRL(const V3& eye, const V3& target,
+                     const V3& up = V3(0, 0, 1)) {
         V3 d = (target - eye).norm();
-        V3 r = headingRight(d);          // horizontal, world right of the view dir
+        V3 r = up.cross(d);              // camera right for the given up
         float rl = r.len();
         if (rl < 1e-5f) {                // looking straight up/down: bail to any frame
             r = V3(1, 0, 0);
@@ -145,7 +146,7 @@ struct M4 {
         }
         r = r / rl;
         V3 back = d * -1.0f;
-        V3 u = r.cross(back);            // completes the (r, u, back) frame
+        V3 u = d.cross(r).norm();        // completes the (r, u, back) frame
 
         M4 v;
         v.m[0] = r.x; v.m[4] = r.y; v.m[8] = r.z;

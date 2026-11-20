@@ -1,694 +1,364 @@
-// Headless diagnostic: does the ball cam ever SNAP - move the eye or turn the
-// view by a whole pose in a single frame - instead of easing into the new
-// pose? And does it still keep the ball centered while easing?
+// Camera model probe: exercises the turball.io-style camera
+// (src/camera/rl_camera.cpp) with synthetic snapshots and pins down the
+// behaviour the port is supposed to have:
 //
-// It also checks the car cam's swivel PIVOT: up/down has to rotate the rig
-// around the car (eye moves, car holds its place on screen) the way left/right
-// does, not tilt the view from a fixed eye, and the swinging eye must never
-// drop through the floor. Note the car HOLDS A PLACE that is not the screen
-// centre: the parked view is level (reference applied-pitch law - elevation
-// of the look-dir + Camera Angle), which leaves the car resting ~15-18 deg
-// below the axis, so the check is that the offset stays constant, not zero.
-//
-// And the car cam's AIR CAMERA: in the air the camera sits behind the
-// direction of TRAVEL (not behind the nose) and eases onto it, re-read every
-// frame - so pitch and air-yaw must not move it while the velocity says
-// otherwise, a change in velocity must ease it behind the new heading inside
-// ~0.6s (timing owned by Stiffness), and touching down must put it back
-// rigidly behind the facing.
-//
-// The degenerate cases are the interesting ones: whenever the ball passes
-// over (or under) the car, its horizontal offset from the car runs through
-// zero - where the bearing atan2 returns is undefined - so the ideal rig can
-// ask for a pose on the far side of the car in one frame. The eye follower
-// folds frame-to-frame rig speed into its follow rate, which turns any such
-// jump into an instant snap (factor lands at ~1).
+//   * no NaN / no runaway pose over a long chaotic trace
+//   * ball cam keeps the ball on the view axis (bearing-wise) and pitches
+//     toward an elevated ball
+//   * car cam sits behind the car's facing on the ground, and swings behind
+//     the direction of TRAVEL in the air
+//   * mode switches blend from the old pose instead of cutting
+//   * FOV widens with speed and pops at supersonic
+//   * swivel offsets the view, then recenters faster than it moved out
+//   * ground roll banks the camera up-vector ~10% of the car's roll, and the
+//     bank decays in the air
 //
 // Build (from repo root):
-//   c++ -std=c++20 -O2 -I. -Isrc -Ithird_party tools/probe_camera.cpp src/camera/rl_camera.cpp -o probe_camera
+//   c++ -std=c++20 -O2 -I. -Isrc -Ithird_party tools/probe_camera.cpp \
+//       src/camera/rl_camera.cpp -o probe_camera
 // Run:
-//   ./probe_camera           (exit 0 = no snap, no centering/pivot regression)
-//
-// Reference-measured levels for the degenerate cases (probe, before the yaw
-// slew ever existed - the reference rig is lagless on the bearing):
-//   A overhead crossing : eyeStep 516 uu  rotStep 75 deg
-//   C dribble teleport  : eyeStep 225 uu  rotStep 50 deg
-//   E overhead drift    : eyeStep 534 uu  rotStep 95 deg
-
+//   ./probe_camera          (exit 0 = all checks pass)
 #include "src/camera/rl_camera.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
 namespace {
 
-constexpr float kFrameDt = 1.0f / 60.0f;
+constexpr float kPi = 3.14159265358979323846f;
+constexpr float kDt = 1.0f / 60.0f;
 
-float deg(float rad) { return rad * 57.2957795f; }
+int failed = 0;
 
-// Keep the diagnostic thresholds independent of the shipped profile. The
-// probe measures camera mechanics, while the profile is intentionally tuned
-// to match the reference game's imported settings.
-CameraSettings probeSettings() {
-    CameraSettings cs;
-    cs.angle = -4.0f;
-    cs.stiffness = 0.5f;
-    cs.swivelSpeed = 5.0f;
-    cs.transitionSpeed = 1.2f;
-    cs.invertSwivel = false;
-    return cs;
+void check(bool ok, const char* what, const char* detail) {
+    if (!ok) failed++;
+    std::printf("%-56s %s  %s\n", what, ok ? "ok  " : "FAIL", detail);
 }
 
-// Shortest signed difference between two angles, in rad.
+float deg(float r) { return r * 180.0f / kPi; }
 float wrap(float a) {
-    while (a > (float)M_PI) a -= 2 * (float)M_PI;
-    while (a < -(float)M_PI) a += 2 * (float)M_PI;
+    while (a > kPi) a -= 2.0f * kPi;
+    while (a < -kPi) a += 2.0f * kPi;
     return a;
 }
+V3 dirOf(const RLCamera& c) { return (c.target - c.eye).norm(); }
+float horizYaw(const V3& d) { return std::atan2(d.y, d.x); }
+bool finite(const V3& v) {
+    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+}
 
-struct Metrics {
-    float maxEyeStep = 0;   // uu the eye moved in a single frame
-    float maxRotStep = 0;   // deg the view direction turned in a single frame
-    float maxCenterErr = 0; // deg between view dir and true dir to the ball
-    float rmsCenterErr = 0;
-    int frames = 0;
+// Build a car frame from yaw (about world up), pitch (nose up) and roll
+// (about the forward axis).
+struct Frame {
+    V3 f, r, u;
 };
 
-// Per-scenario limits. eyeStep/rotStep are the anti-snap bounds: a pose
-// change bigger than this in one frame reads as a cut, not a swing.
-//
-// The degenerate cases (A/C/E) are where the REFERENCE RIG ITSELF jumps: the
-// ball-cam yaw now tracks the car->ball bearing laglessly like the
-// reference, so an axis crossing swings the eye around the car in one frame
-// (probe header: the reference moves the eye 516 uu / turns the view 75 deg
-// through an overhead crossing). The bounds here are those reference-measured
-// levels plus a small margin - tighter than that would just re-introduce the
-// yaw lag the airborne scenarios need to be without. The legitimate sweeps
-// (B/D/F/G/H) are bounded by physics instead - G's limits are what tracking a
-// 4000 uu/s pass already demands. center is how far the ball may sit off the
-// view axis; since the reference-decoded vertical aim (parked pitch with a
-// deadband) the bound is the ball's own elevation from the eye while the
-// deadband holds, not zero - the measured reference offsets at these same
-// poses run 2-14 deg.
-struct Case {
-    const char* name;
-    SimSnapshot (*at)(float t);
-    float seconds;
-    float maxEyeStep;
-    float maxRotStep;
-    float maxCenter;
-};
+Frame frameOf(float yaw, float pitch, float roll) {
+    // Start with the car level, facing +X (right = +Y, up = +Z), then pitch
+    // about the right axis and roll about the resulting forward axis.
+    V3 f(1, 0, 0), r(0, 1, 0), u(0, 0, 1);
+    const float cp = std::cos(pitch), sp = std::sin(pitch);
+    f = V3(f.x * cp, f.y * cp, sp);            // nose up/down
+    u = V3(-sp, 0, cp);
+    const float cr = std::cos(roll), sr = std::sin(roll);
+    r = V3(r.x * cr + u.x * sr, r.y * cr + u.y * sr, r.z * cr + u.z * sr);
+    u = f.cross(r);                            // right-handed: f x r = up
+    // yaw the whole frame about world Z
+    const float cy = std::cos(yaw), sy = std::sin(yaw);
+    auto rotZ = [&](const V3& v) { return V3(v.x * cy - v.y * sy, v.x * sy + v.y * cy, v.z); };
+    return {rotZ(f), rotZ(r), rotZ(u)};
+}
 
-SimSnapshot makeSnap(V3 carPos, V3 carF, V3 ballPos) {
+SimSnapshot makeSnap(const V3& pos, const Frame& fr, const V3& ball,
+                     const V3& vel = V3(), bool ground = true,
+                     bool supersonic = false) {
     SimSnapshot s;
-    s.carPos = carPos;
-    s.carF = carF;
-    s.carR = V3(0, 1, 0);
-    s.carU = V3(0, 0, 1);
-    s.ballPos = ballPos;
-    s.onGround = true;
+    s.carPos = pos;
+    s.carF = fr.f;
+    s.carR = fr.r;
+    s.carU = fr.u;
+    s.carVel = vel;
+    s.ballPos = ball;
+    s.ballVel = V3();
+    s.onGround = ground;
+    s.supersonic = supersonic;
     return s;
 }
 
-SimSnapshot baseCar() { return makeSnap(V3(0, 0, 17), V3(1, 0, 0), V3()); }
-
-// A: ball flies straight over the car, ~2 uu off the car's vertical axis.
-SimSnapshot overHead(float t) {
-    SimSnapshot s = baseCar();
-    s.ballPos = V3(2.0f, 700.0f - 2200.0f * t, 520.0f);
-    return s;
-}
-// B: ordinary pass across the field, 600-900 uu away.
-SimSnapshot normalPass(float t) {
-    SimSnapshot s = baseCar();
-    s.ballPos = V3(-500.0f + 900.0f * t, 800.0f - 300.0f * t,
-                   300.0f + 200.0f * std::sin(t));
-    return s;
-}
-// C: dribble preset - the ball teleports onto the roof at t = 0.25.
-SimSnapshot dribbleTeleport(float t) {
-    SimSnapshot s = baseCar();
-    const V3 far(600, -700, 91.25f + 17);
-    const V3 roof(20, 0, 17 + 20.755f + 38.6591f * 0.5f + 91.25f + 6.0f);
-    s.ballPos = t < 0.25f ? far : roof;
-    return s;
-}
-// D: ball parked dead ahead on the roof - must stay rigid, nothing to ease.
-SimSnapshot dribbleHold(float) {
-    SimSnapshot s = baseCar();
-    s.ballPos = V3(20, 0, 17 + 20.755f + 38.6591f * 0.5f + 91.25f + 6.0f);
-    return s;
-}
-// E: ball directly overhead drifting around - the bearing is pure noise.
-SimSnapshot overheadDrift(float t) {
-    SimSnapshot s = baseCar();
-    s.ballPos = V3(std::sin(t * 9.0f) * 6.0f, std::cos(t * 7.0f) * 6.0f, 400.0f);
-    return s;
-}
-// F: tight orbit at 400 uu - fast but fully legitimate tracking.
-SimSnapshot orbit(float t) {
-    SimSnapshot s = baseCar();
-    s.ballPos = V3(400.0f * std::cos(t * 3.0f), 400.0f * std::sin(t * 3.0f), 250.0f);
-    return s;
-}
-// G: 4000 uu/s ball whipping past at grazing range (150 uu off the axis) -
-// the fastest bearing sweep real play can ask for.
-SimSnapshot grazeFast(float t) {
-    SimSnapshot s = baseCar();
-    s.ballPos = V3(150.0f, 1400.0f - 4000.0f * t, 200.0f);
-    return s;
-}
-// H: ball 600 uu out crossing the field at 2500 uu/s - common chase case.
-SimSnapshot fastPass(float t) {
-    SimSnapshot s = baseCar();
-    s.ballPos = V3(600.0f, 1500.0f - 2500.0f * t, 300.0f);
-    return s;
+void step(RLCamera& cam, const CameraSettings& cs, const SimSnapshot& s,
+          int frames, float swX = 0, float swY = 0) {
+    for (int i = 0; i < frames; i++) cam.update(kDt, cs, s, swX, swY);
 }
 
-const Case kCases[] = {
-    // A/C/E: bounds are the reference rig's own measured one-frame jumps
-    // (lagless bearing tracking) plus a small margin - see the header note.
-    {"A overhead crossing",   overHead,        1.2f, 560, 85, 33},
-    {"B normal pass",         normalPass,      1.5f,  40,  8, 18},
-    {"C dribble teleport",    dribbleTeleport, 1.2f, 250, 55, 14},
-    {"D dribble hold",        dribbleHold,     2.0f,  40,  8, 14},
-    {"E overhead drift",      overheadDrift,   2.0f, 560, 105, 42},
-    {"F tight orbit",         orbit,           3.0f,  40,  8, 15},
-    // G: reference holds ~10 deg max; our 12 deg blend width (a deliberate
-    // compromise that keeps the roof-launch car nearer the reference's 20 deg
-    // off-axis) leaves ~10.5 at the closest approach.
-    {"G supersonic graze",    grazeFast,       0.8f, 120, 26, 17},
-    {"H fast pass 600uu",     fastPass,        1.5f,  40,  8, 16},
-};
-
-Metrics run(const Case& c) {
-    CameraSettings cs = probeSettings();
-    RLCamera cam;
-    cam.reset(c.at(0), cs);
-    cam.setMode(CamMode::Ball);
-
-    Metrics m;
-    V3 prevEye = cam.eye;
-    V3 prevDir = (cam.target - cam.eye).norm();
-    double err2 = 0;
-    for (int i = 0; i < int(c.seconds / kFrameDt); i++) {
-        const SimSnapshot s = c.at(i * kFrameDt);
-        cam.update(kFrameDt, cs, s, 0, 0);
-
-        const V3 dir = (cam.target - cam.eye).norm();
-        const float centerErr =
-            std::acos(clampf(dir.dot((s.ballPos - cam.eye).norm()), -1.0f, 1.0f));
-        const float eyeStep = (cam.eye - prevEye).len();
-        const float rotStep =
-            std::acos(clampf(dir.dot(prevDir), -1.0f, 1.0f)) * 57.2957795f;
-
-        m.maxEyeStep = std::fmax(m.maxEyeStep, eyeStep);
-        m.maxRotStep = std::fmax(m.maxRotStep, rotStep);
-        m.maxCenterErr = std::fmax(m.maxCenterErr, centerErr * 57.2957795f);
-        err2 += double(centerErr) * double(centerErr);
-        m.frames++;
-        prevEye = cam.eye;
-        prevDir = dir;
-    }
-    if (m.frames) m.rmsCenterErr = float(std::sqrt(err2 / m.frames));
-    return m;
-}
-
-// ---- car-cam swivel pivot. Up/down used to rotate the camera around its own
-// starting point (fixed eye, tilting view: the car slid across the frame)
-// while left/right orbited the car. Both axes now swing the rig on a sphere
-// around the car, so over a window inside the swivel's orbit range the eye
-// must travel a real distance AND the car must stay put on screen. The eye
-// also never drops through the floor (the renderer draws it opaque), for the
-// whole run, not just the window.
-struct Swivel {
-    const char* name;
-    float swY;        // +1 = look up (swings the eye down), -1 = look down
-    float carZ;       // car center height (uu)
-    bool onGround;
-    float minTravel;  // uu the eye must cover inside the centering window
-};
-
-const Swivel kSwivels[] = {
-    {"up, ground",     1.0f,  17.0f, true,  60},
-    {"down, ground",  -1.0f,  17.0f, true,  60},
-    {"up, air",        1.0f, 500.0f, false, 60},
-    {"down, air",     -1.0f, 500.0f, false, 60},
-};
-
-bool checkSwivelPivot() {
-    constexpr float kWindow = 0.10f;  // s: pitchOff is still fully inside the
-                                      // orbit range at default settings
-    constexpr float kLateA = 0.35f;   // s - the swivel is near its plateau
-    constexpr float kLateB = 0.50f;   // s - the composition law is steady here
-    constexpr float kMaxLateDrift = 2.0f; // deg - the composition law must be
-                     // CONSTANT once the orbit is under way (pinning law)
-    constexpr float kMaxTransient = 12.0f; // deg - the eye/apply followers
-                     // trade some transient pinning for their anti-jump
-                     // protections (the reference applies swivel offsets
-                     // laglessly; ours keeps the protections).
-    constexpr float kMinEyeZ = 15.5f; // uu: never through the arena floor
-
-    bool ok = true;
-    std::printf("\n=== car-cam swivel pivot (eye travels, car stays put) ===\n");
-    for (const Swivel& v : kSwivels) {
-        CameraSettings cs = probeSettings();
-        RLCamera cam;
-        SimSnapshot s = makeSnap(V3(0, 0, v.carZ), V3(1, 0, 0),
-                                 V3(0, 0, v.carZ));
-        s.onGround = v.onGround;
-        cam.reset(s, cs);
-        cam.setMode(CamMode::Car);
-        cam.update(kFrameDt, cs, s, 0, 0);
-        const float startZ = cam.eye.z;
-
-        float travel = 0, drift = 0, off0 = 0, offLate = -1e9f, offLate2 = -1e9f;
-        float minZ = cam.eye.z;
-        bool first = true;
-        for (int i = 0; i < int(1.0f / kFrameDt); i++) {
-            cam.update(kFrameDt, cs, s, 0, v.swY);
-            const float t = i * kFrameDt;
-            if (t < kWindow) travel = std::fabs(cam.eye.z - startZ);
-
-            const V3 toCar = s.carPos - cam.eye;
-            const V3 dir = (cam.target - cam.eye).norm();
-            const float horiz = std::sqrt(toCar.x * toCar.x + toCar.y * toCar.y);
-            const float elevCar = std::atan2(toCar.z, horiz);
-            const float elevView = std::atan2(dir.z,
-                                              std::sqrt(dir.x * dir.x + dir.y * dir.y));
-            if (t < kWindow) {
-                const float off = std::fabs(elevCar - elevView) * 57.2957795f;
-                if (first) { off0 = off; first = false; }
-                else drift = std::fmax(drift, std::fabs(off - off0));
-            }
-            if (t >= kLateA && t < kLateA + 2 * kFrameDt && offLate < -1e8f)
-                offLate = elevCar - elevView;
-            if (t >= kLateB && t < kLateB + 2 * kFrameDt && offLate2 < -1e8f)
-                offLate2 = elevCar - elevView;
-            minZ = std::fmin(minZ, cam.eye.z);
-        }
-        const float lateDrift =
-            std::fabs((offLate2 - offLate) * 57.2957795f);
-
-        const bool okTravel = travel >= v.minTravel;
-        // Pinning now means the car holds its (off-centre) composition spot
-        // while the eye swings - not that it sits centred: with the level
-        // parked pitch (reference law) the car rests ~15-18 deg below the
-        // axis the whole time, and the swivel's eye-orbit + pitch co-motion
-        // keeps that constant (drift, not absolute offset, is the failure
-        // mode the probe is after).
-        const bool okLate = lateDrift <= kMaxLateDrift;
-        const bool okTransient = drift <= kMaxTransient;
-        const bool okFloor = minZ >= kMinEyeZ;
-        if (!(okTravel && okLate && okTransient && okFloor)) ok = false;
-        std::printf("%-14s %s travel %5.1f/%3.0f uu  off %5.1f (late %.1f/%.0f,"
-                    " transient %4.1f/%.0f)  eye min z %6.1f uu\n",
-                    v.name, (okTravel && okLate && okTransient && okFloor)
-                                ? "ok  " : "FAIL",
-                    travel, v.minTravel, off0, lateDrift, kMaxLateDrift,
-                    drift, kMaxTransient, minZ);
-    }
-    return ok;
-}
-
-// ---- car-cam AIR CAMERA: RL does not decide "which side of the car" on a
-// timer - in the air the camera sits behind the direction of TRAVEL and
-// eases onto it, re-read every frame. That gives four properties worth
-// pinning down, all measured here at 60fps:
-//   1. pitch never moves it (the nose projection flips 180 deg when pitch
-//      passes vertical, which the old air follow used to chase: measured
-//      180 deg of camera swing at 75 uu/frame from a pure 0->120 pitch);
-//   2. air-yawing the car does not move it either when the momentum says
-//      otherwise - the velocity heading is the target, not the nose;
-//   3. a change in velocity (a flip, a stall, gravity swinging you round)
-//      eases the camera behind the new heading inside ~0.6s - that timing
-//      comes from Stiffness, RL's own "how rigidly the camera follows your
-//      car" setting (kAirEaseBase/kAirEaseStiff in rl_camera.cpp);
-//   4. on the ground it goes back to being rigid behind the facing, so a
-//      landing re-aligns immediately instead of floating.
-//
-// Each case flies an airborne car (synthetic pose + velocity, never a sim)
-// and compares the eye's bearing around the car with the heading it should
-// be sitting BEHIND (+180 deg: the eye is on the far side). settle = the
-// first instant from which the camera never leaves that heading again;
-// step = the largest distance the eye covered in one frame, which catches a
-// snap rather than a swing.
-struct Air {
-    const char* name;
-    float seconds;
-    float yawEnd, tYaw;        // car facing ramp (rad, held after tYaw)
-    float pitchEnd, tPitch;    // car pitch ramp
-    float velYawEnd, tVelYaw;  // horizontal velocity heading ramp
-    float speed;               // horizontal speed, uu/s (0 = no direction)
-    bool expectVel;            // air target = velocity heading, not facing
-    float landAt;              // s: touches down here (< 0 = stays airborne)
-    float maxSwing;            // deg the camera may move from its start
-    float maxSettle;           // s: trailing settle must begin by then
-    float maxOff;              // deg off the expected heading once settled
-    float maxStep;             // uu the eye may move in one frame
-};
-
-float ramp(float t, float end, float tEnd) {
-    return (tEnd <= 0) ? end : end * std::fmin(t / tEnd, 1.0f);
-}
-
-SimSnapshot airAt(float t, const Air& c) {
-    const float yaw = ramp(t, c.yawEnd, c.tYaw);
-    const float pit = ramp(t, c.pitchEnd, c.tPitch);
-    const float vy = ramp(t, c.velYawEnd, c.tVelYaw);
-    SimSnapshot s;
-    s.carPos = V3(0, 0, 500);
-    s.carF = V3(std::cos(pit) * std::cos(yaw), std::cos(pit) * std::sin(yaw),
-                std::sin(pit));
-    s.carR = V3(-std::sin(yaw), std::cos(yaw), 0);
-    s.carU = V3(-std::sin(pit) * std::cos(yaw), -std::sin(pit) * std::sin(yaw),
-                std::cos(pit));
-    s.carVel = V3(std::cos(vy) * c.speed, std::sin(vy) * c.speed, -350.0f);
-    s.onGround = (c.landAt >= 0 && t >= c.landAt);
-    return s;
-}
-
-// Heading the camera should be LOOKING along (its eye is 180 deg round from
-// this): the velocity in the air when the case says so, otherwise the
-// facing - and always the facing once the wheels are down.
-float wantYaw(const Air& c, float t) {
-    if (c.landAt >= 0 && t >= c.landAt) return ramp(t, c.yawEnd, c.tYaw);
-    if (c.expectVel) return ramp(t, c.velYawEnd, c.tVelYaw);
-    return ramp(t, c.yawEnd, c.tYaw);
-}
-
-bool checkAirCamera() {
-    const float D = (float)M_PI / 180.0f;
-    const Air kAir[] = {
-        // name                  secs  yawEnd tYaw pitchEnd tPitch velYaw tVelYaw speed  vel? land  swing settle  off step
-        {"pitch 0->120",         2.0f, 0,     0,   120 * D, 1.0f,  0,     0,      1410, true,  -1,    3,  0.10f,  3, 70},
-        {"pitch 0->360 (flip)",  2.0f, 0,     0,   360 * D, 1.2f,  0,     0,      1410, true,  -1,    3,  0.10f,  3, 70},
-        {"pitch 120, slow",      2.0f, 0,     0,   120 * D, 1.0f,  0,     0,      150,  false, -1,    3,  0.10f,  3, 70},
-        {"air yaw 90, vel held", 2.0f, 90 * D,0.4f, 0,      0,     0,     0,      1410, true,  -1,    3,  0.10f,  3, 70},
-        {"hover, no velocity",   2.0f, 0,     0,   0,       0,     0,     0,      0,    false, -1,    3,  0.10f,  3, 70},
-        {"velocity turns 90",    2.5f, 0,     0,   0,       0,     90 * D,0.15f,  1410, true,  -1,  360,  1.00f,  5, 60},
-        {"velocity turns 180",   3.0f, 0,     0,   0,       0,     180 * D,0.30f, 1410, true,  -1,  360,  1.20f,  5, 60},
-        {"lands, nose at 90",    3.0f, 90 * D,0.4f, 0,       0,     0,     0,      1410, true,  1.5f, 360, 2.20f,  5, 90},
-    };
-
-    bool ok = true;
-    std::printf("\n=== car-cam air camera (velocity based, stiffness eased) ===\n");
-    for (const Air& c : kAir) {
-        CameraSettings cs = probeSettings();
-        RLCamera cam;
-        const SimSnapshot s0 = airAt(0, c);
-        cam.setMode(CamMode::Car);
-        cam.reset(s0, cs);
-
-        const float startWant = wantYaw(c, 0);
-        const int n = int(c.seconds / kFrameDt);
-        float off[640];
-        float swing = 0, step = 0;
-        V3 prev = cam.eye;
-        for (int i = 0; i < n && i < 640; i++) {
-            const float t = i * kFrameDt;
-            const SimSnapshot s = airAt(t, c);
-            cam.update(kFrameDt, cs, s, 0, 0);
-
-            const float bearing =
-                std::atan2(cam.eye.y - s.carPos.y, cam.eye.x - s.carPos.x);
-            off[i] = std::fabs(deg(wrap(bearing - (wantYaw(c, t) + (float)M_PI))));
-            swing = std::fmax(swing, deg(std::fabs(wrap(bearing - (startWant + (float)M_PI)))));
-            step = std::fmax(step, (cam.eye - prev).len());
-            prev = cam.eye;
-        }
-
-        // First index of the trailing run that stays on the heading.
-        int settle = n - 1;
-        while (settle > 0 && off[settle - 1] <= c.maxOff) settle--;
-        float worst = 0, preWorst = 0;
-        for (int i = settle; i < n; i++) worst = std::fmax(worst, off[i]);
-        for (int i = 0; i < settle; i++) preWorst = std::fmax(preWorst, off[i]);
-
-        const float settleS = settle * kFrameDt;
-        const bool okSwing = swing <= c.maxSwing;
-        const bool okSettle = settleS <= c.maxSettle;
-        const bool okOff = worst <= c.maxOff;
-        const bool okStep = step <= c.maxStep;
-        if (!(okSwing && okSettle && okOff && okStep)) ok = false;
-        std::printf("%-22s %s swing %5.1f/%3.0f deg  settle %.2f/%.2f s"
-                    "  off %4.1f/%2.0f deg  peak-before %5.1f deg"
-                    "  step %4.1f/%3.0f uu\n",
-                    c.name, (okSwing && okSettle && okOff && okStep) ? "ok  "
-                                                                      : "FAIL",
-                    swing, c.maxSwing, settleS, c.maxSettle, worst, c.maxOff,
-                    preWorst, step, c.maxStep);
-    }
-    return ok;
-}
-
-// ---- GROUND SELF-CORRECTION: the pitch-immune air axis can end up 180 deg
-// off. While the nose sits in the too-vertical band (fxy < 0.15) the bearing
-// is not readable, so a real heading change of more than 90 deg made in that
-// window is indistinguishable from a pitch flip when the nose re-emerges -
-// and the continuity rule then pins the axis to bearing + 180, where it
-// stays, because a stuck axis and a nose held past vertical present exactly
-// the same evidence. In the air you never see it (the velocity heading is
-// the target), but if the ground trusted that axis a landing would ease the
-// camera onto it and it would sit in FRONT of the car forever - measured at
-// 180.0 deg off after this sequence before the ground was split off to read
-// the nose projection fresh every frame (which is both self-correcting and
-// the healing of the axis for the next takeoff).
-//
-// Sequence: level flight at 0 -> nose to 88 deg -> yaw 0->120 while the nose
-// is unreadable -> level out -> land at 1.5s -> drive straight. The camera
-// must track the nose the whole way and, after landing, stay behind it.
-bool checkGroundHeal() {
-    const float D = (float)M_PI / 180.0f;
-    auto stateAt = [&](float t, float& yaw, float& pitch, bool& ground) {
-        yaw = 0;
-        if (t >= 0.8f) yaw = 120 * D * std::fmin((t - 0.8f) / 0.4f, 1.0f);
-        pitch = 0;
-        if (t >= 0.5f && t < 0.8f) pitch = 88 * D * ((t - 0.5f) / 0.3f);
-        else if (t >= 0.8f && t < 1.2f) pitch = 88 * D;
-        else if (t >= 1.2f && t < 1.5f) pitch = 88 * D * (1.0f - (t - 1.2f) / 0.3f);
-        ground = (t >= 1.5f);
-    };
-
-    CameraSettings cs = probeSettings();
-    RLCamera cam;
-    float yaw = 0, pitch = 0;
-    bool ground = false;
-    stateAt(0, yaw, pitch, ground);
-
-    auto snap = [&](float t) {
-        stateAt(t, yaw, pitch, ground);
-        const float cp = std::cos(pitch), sp = std::sin(pitch);
-        const float cy = std::cos(yaw), sy = std::sin(yaw);
-        SimSnapshot s;
-        s.carPos = V3(0, 0, 500);  // fixed height: this test is about the
-                                   // heading, not the drop onto the floor
-        s.carF = V3(cp * cy, cp * sy, sp);
-        s.carR = V3(-sy, cy, 0);
-        s.carU = V3(-sp * cy, -sp * sy, cp);
-        s.carVel = V3(cy * 1410.0f, sy * 1410.0f, ground ? 0.0f : -350.0f);
-        s.onGround = ground;
-        return s;
-    };
-
-    cam.setMode(CamMode::Car);
-    cam.reset(snap(0), cs);
-
-    const int n = int(3.0f / kFrameDt);
-    float off[192] = {0};
-    float step = 0, postLand = 0;
-    V3 prev = cam.eye;
-    for (int i = 0; i < n && i < 192; i++) {
-        const float t = i * kFrameDt;
-        const SimSnapshot s = snap(t);
-        cam.update(kFrameDt, cs, s, 0, 0);
-        stateAt(t, yaw, pitch, ground);
-        const float bearing =
-            std::atan2(cam.eye.y - s.carPos.y, cam.eye.x - s.carPos.x);
-        off[i] = std::fabs(deg(wrap(bearing - (yaw + (float)M_PI))));
-        step = std::fmax(step, (cam.eye - prev).len());
-        prev = cam.eye;
-        if (ground && t > 2.0f) postLand = std::fmax(postLand, off[i]);
-    }
-    // The landing may have to carry the camera round if the air left it on
-    // the wrong side; it must be back behind the car well within 0.6s and
-    // then stay there for the rest of the drive.
-    int settle = n - 1;
-    while (settle > 0 && off[settle - 1] <= 5.0f) settle--;
-    const float settleS = settle * kFrameDt;
-    const bool okSettle = settleS <= 2.1f;   // 1.5s landing + 0.6s to heal
-    const bool okPost = postLand <= 2.0f;
-    const bool okStep = step <= 70.0f;
-    const bool ok = okSettle && okPost && okStep;
-    std::printf("\n=== ground self-correction (nose projection read fresh) ===\n");
-    std::printf("land after vertical   %s settle %.2f/2.10 s  post-land"
-                " off %4.1f/2.0f deg  step %4.1f/70.0 uu\n",
-                ok ? "ok  " : "FAIL", settleS, postLand, step);
-    return ok;
-}
-
-// ---- reference-decoded laws. The camera was re-written from the
-// reference game's decoded camera blob (probe + WASM disassembly); these are
-// the three most fragile laws, checked directly:
-//  1. swivel: full stick input converges to a PLATEAU of 1.0472 rad
-//     (59.99 deg) of yaw offset, exponential in hold; on release with
-//     "snap" on, it returns exponentially at ~34.5*(ss/10)/s.
-//  2. mode transition: the car<->ball blend follows consumed = 1-lambda^2
-//     (slow start, fast finish) over T = 0.5/transitionSpeed seconds.
-//  3. ball-cam vertical law: the parked view pitch has a DEADBAND (the ball
-//     rides above centre until ~8 deg past the parked eye level, then the
-//     aim tilts onto the ball) while the rig swings around the car the
-//     OPPOSITE way (down toward the floor for a high ball, sliding inward
-//     once floor-pinned). See checkRefLaws case 3 and the refcam probes.
-bool checkRefLaws() {
-    bool ok = true;
-    std::printf("\n=== reference camera laws (swivel plateau, transition shape, ball-cam steep pose) ===\n");
-
-    // -- 1. swivel plateau (car cam, full right-input held for 2 s)
-    CameraSettings cs = probeSettings();
-    RLCamera cam;
-    SimSnapshot s = baseCar();
-    cam.reset(s, cs);
-    cam.setMode(CamMode::Car);
-    cam.update(kFrameDt, cs, s, 0, 0);
-    float plateauBearing = 0, maxSwivelStep = 0;
-    V3 prevEye = cam.eye;
-    for (int i = 0; i < int(2.0f / kFrameDt); i++) {
-        cam.update(kFrameDt, cs, s, 1.0f, 0.0f);
-        maxSwivelStep = std::fmax(maxSwivelStep, (cam.eye - prevEye).len());
-        prevEye = cam.eye;
-    }
-    {
-        const V3 rel = cam.eye - s.carPos;
-        plateauBearing =
-            wrap(std::atan2(rel.y, rel.x) + (float)M_PI);  // = yawOff_
-    }
-    const bool okPlateau = std::fabs(plateauBearing - 1.0472f) < 0.03f;
-    ok = ok && okPlateau;
-    std::printf("swivel plateau         %s bearing %6.3f/1.047 rad"
-                "  max step %5.1f uu\n",
-                okPlateau ? "ok  " : "FAIL", plateauBearing, maxSwivelStep);
-
-    // -- 1b. release: snap-back exponential, kRelease = 34.5*(ss/10)/s
-    float releaseBearing = plateauBearing;
-    for (int i = 0; i < int(0.2f / kFrameDt); i++)
-        cam.update(kFrameDt, cs, s, 0.0f, 0.0f);
-    {
-        const V3 rel = cam.eye - s.carPos;
-        releaseBearing =
-            wrap(std::atan2(rel.y, rel.x) + (float)M_PI);  // = yawOff_
-    }
-    // expect ~ plateau * exp(-34.5*0.5*0.2) = 0.032*plateau (plus what the
-    // eye follower's own lag leaves behind - so allow 0.15 of the plateau)
-    const bool okRelease = releaseBearing < 0.15f * 1.0472f;
-    ok = ok && okRelease;
-    std::printf("swivel release         %s bearing %6.3f/%.3f rad after 0.2 s\n",
-                okRelease ? "ok  " : "FAIL", releaseBearing, 0.032f);
-
-    // -- 2. transition shape: car -> ball with a static ball OFF to the side
-    //        (a ball dead ahead on the car axis parks both eyes in the same
-    //        spot, which would make the blend invisible). The eye is a blend
-    //        of two static poses, so its per-frame speed profile IS the
-    //        blend profile: slow over the first quarter of T, fastest in
-    //        the second, done by about T = 0.5/transitionSpeed.
-    cs.transitionSpeed = 1.0f;  // T = 0.5 s exactly
-    RLCamera tc;
-    SimSnapshot bs = baseCar();
-    bs.ballPos = V3(300, 1500, 300);
-    tc.reset(bs, cs);
-    tc.setMode(CamMode::Car);
-    tc.update(kFrameDt, cs, bs, 0, 0);
-    V3 pe = tc.eye;
-    float early = 0, mid = 0, tail = 0, total = 0, maxStep = 0;
-    for (int i = 0; i < int(1.5f / kFrameDt); i++) {
-        tc.update(kFrameDt, cs, bs, 0, 0);
-        if (i == 0) { tc.setMode(CamMode::Ball); continue; }
-        const float step = (tc.eye - pe).len();
-        pe = tc.eye;
-        total += step;
-        maxStep = std::fmax(maxStep, step);
-        // T = 0.5 s = 30 frames; frame 0 was still car mode. The blend
-        // profile (1-lambda^2, done by T) is what the follower lag makes
-        // hard to read directly, so check the robust consequences: the
-        // transition SWEETS over more than a second of frames (no cut),
-        // travel is real (there is an animation at all), and frames 31..90
-        // are essentially dead (finishes by T).
-        if (i >= 1 && i <= 5) early += step;
-        else if (i <= 20) mid += step;
-        else if (i <= 90) tail += step;
-    }
-    const bool okShape =
-        total > 5.0f && maxStep < 40.0f && tail < 0.05f * total;
-    ok = ok && okShape;
-    std::printf("transition to ball     %s total %.1f uu, max step %.1f uu,"
-                " tail %.2f uu (no cut, done by T)\n",
-                okShape ? "ok  " : "FAIL", total, maxStep, tail);
-
-    // -- 3. ball-cam vertical law: ball 1000 uu out at 45 deg over the car
-    //        (the probe the old rise decode used). The reference rig here has
-    //        LEFT its parked pose: the aim has tilted onto the ball and the
-    //        eye has swung down around the car (measured on the reference
-    //        rig, settled: eye ~242 behind / ~46 up, view pitch ~26 deg,
-    //        ball ~12 deg off centre). The old decode instead lifted the
-    //        parked eye by 0.5217*height*|E| = 41 uu and kept the view on the
-    //        ball from there - which is what dropped the car out of frame on
-    //        a roof launch.
-    RLCamera rc;
-    SimSnapshot rs = baseCar();
-    rs.ballPos = V3(1000, 0, 1017);   // dz = 1000 over car center z=17
-    rc.reset(rs, cs);
-    rc.setMode(CamMode::Ball);
-    rc.update(kFrameDt, cs, rs, 0, 0);
-    for (int i = 0; i < int(3.0f / kFrameDt); i++)
-        rc.update(kFrameDt, cs, rs, 0, 0);
-    const V3 relEye = rc.eye - rs.carPos;
-    const float behind = -relEye.x;   // ball is straight ahead (+x)
-    const V3 viewDir = (rc.target - rc.eye).norm();
-    const float viewPitch = std::asin(viewDir.z) * 57.2957795f;
-    const V3 toBall = (rs.ballPos - rc.eye).norm();
-    const float angBall = std::acos(clampf(viewDir.dot(toBall), -1.0f, 1.0f)) *
-                          57.2957795f;
-    // The colinear rig deliberately deviates from the legacy decode at steep
-    // pitches: instead of parking near the floor at ~242 behind (which left
-    // the car 50-65 deg out of frame during powered dives), the eye mirrors
-    // the view pitch so the eye-car-ball line stays straight and the car
-    // stays centred. Measured: eye ~81 behind / ~7 BELOW the car, pitch
-    // ~31 deg onto the ball, ball still centred (angBall ~12).
-    const bool okRise = behind > 70.0f && behind < 150.0f &&
-                        relEye.z > -20.0f && relEye.z < 5.0f &&
-                        viewPitch > 24.0f && viewPitch < 38.0f &&
-                        angBall < 14.0f;
-    ok = ok && okRise;
-    std::printf("ball-cam steep pose    %s behind %5.1f up %5.1f"
-                " viewPitch %5.1f angBall %4.1f"
-                " (colinear rig: eye mirrors the view pitch)\n",
-                okRise ? "ok  " : "FAIL", behind, relEye.z, viewPitch, angBall);
-    return ok;
+CameraSettings probeSettings() {
+    CameraSettings cs;
+    cs.fov = 110;
+    cs.distance = 270;
+    cs.height = 100;
+    cs.angle = -3;
+    cs.stiffness = 0.35f;
+    cs.swivelSpeed = 4;
+    cs.transitionSpeed = 2;
+    cs.invertSwivel = true;
+    return cs;
 }
 
 }  // namespace
 
 int main() {
-    int failed = 0;
-    std::printf("=== carballer ball-cam snap probe (60fps frames) ===\n");
-    for (const Case& c : kCases) {
-        const Metrics m = run(c);
-        const bool okEye = m.maxEyeStep <= c.maxEyeStep;
-        const bool okRot = m.maxRotStep <= c.maxRotStep;
-        const bool okCtr = m.maxCenterErr <= c.maxCenter;
-        const bool ok = okEye && okRot && okCtr;
-        if (!ok) failed++;
-        std::printf("%-22s %s eyeStep %6.1f/%3.0f uu  rotStep %5.1f/%2.0f deg"
-                    "  center %5.1f/%2.0f deg (rms %.2f)\n",
-                    c.name, ok ? "ok  " : "FAIL", m.maxEyeStep, c.maxEyeStep,
-                    m.maxRotStep, c.maxRotStep, m.maxCenterErr, c.maxCenter,
-                    m.rmsCenterErr);
+    const CameraSettings cs = probeSettings();
+    const Frame level = frameOf(0, 0, 0);
+    const Frame level90 = frameOf(kPi * 0.5f, 0, 0);
+
+    // ---- 1. ball cam: ball dead ahead -> ball on the view axis horizontally
+    {
+        RLCamera cam;
+        SimSnapshot s = makeSnap(V3(0, 0, 17), level, V3(3500, 0, 300));
+        cam.reset(s, cs);
+        step(cam, cs, s, 180);
+        const V3 d = dirOf(cam);
+        const V3 toBall = (s.ballPos - cam.eye).norm();
+        const float err = deg(std::acos(clampf(
+            V3(d.x, d.y, 0).norm().dot(V3(toBall.x, toBall.y, 0).norm()), -1.0f, 1.0f)));
+        char buf[128];
+        std::snprintf(buf, sizeof buf, "horizontal view-to-ball %.3f deg, eye z %.1f", err, cam.eye.z);
+        check(err < 1.0f && finite(cam.eye) && finite(cam.target),
+              "ball cam keeps a grounded ball on the view axis", buf);
     }
-    if (!checkSwivelPivot()) failed++;
-    if (!checkAirCamera()) failed++;
-    if (!checkGroundHeal()) failed++;
-    if (!checkRefLaws()) failed++;
-    std::printf("\n%s\n", failed ? "SNAP/CENTERING/PIVOT/AIR/HEAL/LAWS REGRESSION"
-                                 : "no snaps, centering ok, swivel orbits the car, air cam follows velocity, ground self-corrects; reference laws hold");
+
+    // ---- 2. ball cam pitches up for an elevated ball
+    {
+        RLCamera low, high;
+        SimSnapshot sLow = makeSnap(V3(0, 0, 17), level, V3(2200, 0, 100));
+        SimSnapshot sHigh = makeSnap(V3(0, 0, 17), level, V3(2200, 0, 1600));
+        low.reset(sLow, cs);
+        high.reset(sHigh, cs);
+        step(low, cs, sLow, 240);
+        step(high, cs, sHigh, 240);
+        const float pLow = std::asin(clampf(dirOf(low).z, -1, 1));
+        const float pHigh = std::asin(clampf(dirOf(high).z, -1, 1));
+        const V3 dHigh = dirOf(high);
+        const V3 toBall = (sHigh.ballPos - high.eye).norm();
+        const float err = deg(std::acos(clampf(
+            V3(dHigh.x, dHigh.y, 0).norm().dot(V3(toBall.x, toBall.y, 0).norm()), -1.0f, 1.0f)));
+        char buf[160];
+        std::snprintf(buf, sizeof buf,
+                      "pitch low %.2f / high %.2f deg, horiz err %.2f, eye z %.1f",
+                      deg(pLow), deg(pHigh), err, high.eye.z);
+        check(deg(pHigh) > deg(pLow) + 8.0f && err < 1.0f && finite(high.eye),
+              "ball cam tilts up toward an elevated ball", buf);
+    }
+
+    // ---- 3. car cam on the ground: behind the car, looking along the nose
+    {
+        RLCamera cam;
+        SimSnapshot s = makeSnap(V3(0, 0, 17), level, V3(4000, 0, 100));
+        cam.reset(s, cs);
+        cam.setMode(CamMode::Car);
+        step(cam, cs, s, 240);
+        const V3 d = dirOf(cam);
+        const V3 rel = cam.eye - s.carPos;
+        char buf[160];
+        std::snprintf(buf, sizeof buf,
+                      "behind %.1f uu, view-nose horiz %.1f deg, eye z %.1f",
+                      rel.dot(s.carF), deg(std::acos(clampf(
+                          V3(d.x, d.y, 0).norm().dot(s.carF), -1.0f, 1.0f))),
+                      cam.eye.z);
+        check(rel.dot(s.carF) < -150.0f && d.x > 0.95f && cam.eye.z > s.carPos.z + 50.0f,
+              "car cam on the ground sits behind the nose", buf);
+    }
+
+    // ---- 4. car cam in the air swings behind the direction of travel
+    {
+        RLCamera cam;
+        SimSnapshot s = makeSnap(V3(0, 0, 800), level, V3(4000, 0, 100),
+                                 V3(0, 1600, 0), false);
+        cam.reset(s, cs);
+        cam.setMode(CamMode::Car);
+        step(cam, cs, s, 180);
+        const V3 d = dirOf(cam);
+        const float yaw = horizYaw(d);
+        char buf[128];
+        std::snprintf(buf, sizeof buf, "view yaw %.1f deg (travel +Y), dir.y %.3f",
+                      deg(yaw), d.y);
+        check(deg(yaw) > 45.0f && d.y > 0.7f,
+              "car cam swings behind the velocity in the air", buf);
+    }
+
+    // ---- 5. mode switch blends out of the old pose instead of cutting
+    {
+        RLCamera cam;
+        // Ball off to the side so ball cam and car cam settle far apart.
+        SimSnapshot s = makeSnap(V3(0, 0, 17), level, V3(0, 3000, 300));
+        cam.reset(s, cs);
+        step(cam, cs, s, 180);                       // settled ball cam
+        const V3 before = cam.eye;
+        cam.setMode(CamMode::Car);
+        cam.update(kDt, cs, s, 0, 0);
+        const float cut = (cam.eye - before).len();
+        const bool wasBlending = cam.transitioning();
+        step(cam, cs, s, 60);
+        const V3 after = cam.eye;
+        const float settled = (after - before).len();
+        char buf[160];
+        std::snprintf(buf, sizeof buf,
+                      "first-frame step %.2f uu, settled %.1f uu, blending %d",
+                      cut, settled, wasBlending ? 1 : 0);
+        check(cut < 12.0f && settled > 80.0f && wasBlending && !cam.transitioning(),
+              "mode switch eases from the old pose to the new", buf);
+    }
+
+    // ---- 6. FOV follows speed and supersonic
+    {
+        RLCamera slow, fast, sonic;
+        SimSnapshot sSlow = makeSnap(V3(0, 0, 17), level, V3(3000, 0, 300));
+        SimSnapshot sFast = makeSnap(V3(0, 0, 17), level, V3(3000, 0, 300), V3(1200, 0, 0));
+        SimSnapshot sSonic = makeSnap(V3(0, 0, 17), level, V3(3000, 0, 300),
+                                      V3(2300, 0, 0), true, true);
+        slow.reset(sSlow, cs); fast.reset(sFast, cs); sonic.reset(sSonic, cs);
+        step(slow, cs, sSlow, 180);
+        step(fast, cs, sFast, 180);
+        step(sonic, cs, sSonic, 180);
+        char buf[160];
+        std::snprintf(buf, sizeof buf, "fov slow %.2f / fast %.2f / sonic %.2f",
+                      slow.viewFov(), fast.viewFov(), sonic.viewFov());
+        check(slow.viewFov() > cs.fov - 0.1f && fast.viewFov() > slow.viewFov() + 1.0f &&
+                  sonic.viewFov() > fast.viewFov() + 3.0f,
+              "FOV widens with speed and pops at supersonic", buf);
+    }
+
+    // ---- 7. swivel: offsets the view, then recenters on release
+    {
+        RLCamera cam;
+        SimSnapshot s = makeSnap(V3(0, 0, 17), level, V3(4000, 0, 100));
+        cam.reset(s, cs);
+        cam.setMode(CamMode::Car);
+        step(cam, cs, s, 120);
+        const V3 parked = dirOf(cam);
+        const float parkedYaw = horizYaw(parked);
+        step(cam, cs, s, 45, 1.0f, 0.0f);            // swivel right
+        const float swYaw = horizYaw(dirOf(cam));
+        step(cam, cs, s, 15, 0.0f, 0.0f);            // release 0.25 s
+        const float releasedYaw = horizYaw(dirOf(cam));
+        step(cam, cs, s, 90, 0.0f, 0.0f);            // settle
+        const float backYaw = horizYaw(dirOf(cam));
+        char buf[160];
+        std::snprintf(buf, sizeof buf,
+                      "yaw parked %.1f -> swivel %.1f -> release %.1f -> %.1f",
+                      deg(parkedYaw), deg(swYaw), deg(releasedYaw), deg(backYaw));
+        // +X swivel must turn the view toward screen right (increasing yaw),
+        // then snap back to the parked yaw after release.
+        check(deg(wrap(swYaw - parkedYaw)) > 20.0f &&
+                  std::fabs(deg(wrap(backYaw - parkedYaw))) < 3.0f,
+              "swivel moves the view right and recenters after release", buf);
+
+        // Invert Swivel (the turball default) makes a positive Y input tilt
+        // the view down; turning it off flips that.
+        RLCamera down;
+        down.reset(s, cs);
+        down.setMode(CamMode::Car);
+        step(down, cs, s, 120);
+        const float basePitch = std::asin(clampf(dirOf(down).z, -1, 1));
+        step(down, cs, s, 45, 0.0f, 1.0f);           // positive Y
+        const float downPitch = std::asin(clampf(dirOf(down).z, -1, 1));
+
+        CameraSettings plain = cs;
+        plain.invertSwivel = false;
+        RLCamera up;
+        up.reset(s, plain);
+        up.setMode(CamMode::Car);
+        step(up, plain, s, 120);
+        step(up, plain, s, 45, 0.0f, 1.0f);          // positive Y
+        const float upPitch = std::asin(clampf(dirOf(up).z, -1, 1));
+
+        char buf2[160];
+        std::snprintf(buf2, sizeof buf2,
+                      "invert pitch %.2f -> %.2f, plain pitch %.2f, base %.2f",
+                      deg(basePitch), deg(downPitch), deg(upPitch), deg(basePitch));
+        check(deg(downPitch) < deg(basePitch) - 5.0f &&
+                  deg(upPitch) > deg(basePitch) + 5.0f,
+              "invertSwivel decides the vertical swivel direction", buf2);
+
+        // Snap Camera to Default off: releasing holds the swivel offset.
+        CameraSettings hold = cs;
+        hold.snap = false;
+        RLCamera held;
+        held.reset(s, hold);
+        held.setMode(CamMode::Car);
+        step(held, hold, s, 120);
+        step(held, hold, s, 45, 1.0f, 0.0f);
+        const float heldYaw = horizYaw(dirOf(held));
+        step(held, hold, s, 90, 0.0f, 0.0f);
+        const float afterYaw = horizYaw(dirOf(held));
+        char buf3[128];
+        std::snprintf(buf3, sizeof buf3, "held %.1f -> %.1f deg",
+                      deg(heldYaw), deg(afterYaw));
+        check(std::fabs(deg(wrap(afterYaw - heldYaw))) < 3.0f,
+              "snap off holds the swivel offset after release", buf3);
+    }
+
+    // ---- 8. ground roll banks the camera; airborne bank decays
+    {
+        const Frame rolled = frameOf(0, 0, 30.0f * kPi / 180.0f);
+        RLCamera cam;
+        SimSnapshot s = makeSnap(V3(0, 0, 17), rolled, V3(4000, 0, 100));
+        cam.reset(s, cs);
+        cam.setMode(CamMode::Car);
+        step(cam, cs, s, 180);
+        const float bank = deg(std::acos(clampf(cam.up.z, -1.0f, 1.0f)));
+        SimSnapshot air = s;
+        air.carPos = V3(0, 0, 800);
+        air.onGround = false;
+        air.carVel = V3(0, 0, 0);
+        step(cam, cs, air, 180);
+        const float airBank = deg(std::acos(clampf(cam.up.z, -1.0f, 1.0f)));
+        char buf[128];
+        std::snprintf(buf, sizeof buf, "ground bank %.2f deg -> air %.2f deg", bank, airBank);
+        check(bank > 1.5f && bank < 6.0f && airBank < 0.5f,
+              "ground roll banks ~10% of the car's roll, then decays", buf);
+    }
+
+    // ---- 9. long chaotic trace: finite poses, sane distance to the car
+    {
+        RLCamera cam;
+        SimSnapshot s = makeSnap(V3(0, 0, 17), level, V3(2000, 0, 300));
+        cam.reset(s, cs);
+        float maxDist = 0, minDist = 1e9f;
+        bool ok = true;
+        for (int i = 0; i < 4000; i++) {
+            const float t = i * kDt;
+            const float yaw = 3.0f * std::sin(t * 0.7f);
+            const float pitch = 0.9f * std::sin(t * 1.3f);
+            const float roll = 2.0f * std::sin(t * 2.1f);
+            const Frame fr = frameOf(yaw, pitch, roll);
+            s.carF = fr.f; s.carR = fr.r; s.carU = fr.u;
+            s.carPos = V3(1500.0f * std::sin(t * 0.5f),
+                          900.0f * std::cos(t * 0.31f),
+                          17.0f + 700.0f * std::fabs(std::sin(t * 0.8f)));
+            s.carVel = V3(800 * std::cos(t * 0.5f), -400 * std::sin(t * 0.31f),
+                          700 * std::cos(t * 0.8f));
+            s.ballPos = V3(1200.0f * std::sin(t * 0.23f + 0.7f),
+                           2400.0f * std::cos(t * 0.37f),
+                           100.0f + 900.0f * std::fabs(std::sin(t * 0.55f)));
+            s.onGround = (i / 200) % 3 == 0;
+            s.supersonic = (i / 300) % 4 == 0;
+            if (i == 2000) cam.setMode(CamMode::Ball);
+            if (i == 3000) cam.setMode(CamMode::Car);
+            cam.update(kDt, cs, s, std::sin(t * 0.9f), std::cos(t * 1.7f));
+            if (!finite(cam.eye) || !finite(cam.target) || !finite(cam.up)) ok = false;
+            const float dist = (cam.eye - s.carPos).len();
+            if (!std::isfinite(dist)) ok = false;
+            maxDist = std::max(maxDist, dist);
+            minDist = std::min(minDist, dist);
+            if (dist > 4000.0f || dist < 20.0f) ok = false;
+        }
+        char buf[160];
+        std::snprintf(buf, sizeof buf, "eye-car distance %.0f..%.0f uu over 4000 frames",
+                      minDist, maxDist);
+        check(ok, "chaotic 4000-frame trace stays finite and sane", buf);
+    }
+
+    std::printf("\n%s\n", failed ? "CAMERA MODEL REGRESSION" : "all camera model checks ok");
     return failed ? 1 : 0;
 }

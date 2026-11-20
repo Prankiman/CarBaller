@@ -790,7 +790,7 @@ int runApp(int argc, char** argv) {
         rp.dt = gdt;
         rp.snap = &snap;
         rp.steerInput = steerVisual;
-        rp.fovX = a.settings.cam.fov * (float)M_PI / 180.0f;
+        rp.fovX = a.cam.viewFov() * (float)M_PI / 180.0f;
         rp.showBallRing = a.settings.cam.ballFloorProjection;
         rp.showShadows = true;
         rp.showHitboxes = a.settings.gfx.showHitboxes;

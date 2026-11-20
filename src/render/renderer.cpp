@@ -400,7 +400,7 @@ void Renderer::render(const RLCamera& cam, const RenderParams& p, const Particle
 
     float aspect = h_ > 0 ? float(w_) / float(h_) : 1.0f;
     lastFovX = p.fovX;
-    view_ = M4::viewRL(cam.eye, cam.target);
+    view_ = M4::viewRL(cam.eye, cam.target, cam.up);
     // Custom maps can extend far past the soccar shell, so stretch the far
     // plane to their extent (only ever a widening: geometry closer than the
     // old limit keeps the same depth precision it had).
