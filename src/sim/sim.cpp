@@ -449,6 +449,7 @@ bool Sim::applyMap(maploader::MapData&& data, std::string* err) {
 
     map_ = std::move(data);
     mapLoaded_ = true;
+    mapFloorZ_ = 0.0f;               // new map: forget the old map's surface
     mapGen_++;                       // a different map: re-upload, re-collide
     session_ = 0;
     resetShot(0);
@@ -459,6 +460,7 @@ void Sim::unloadMap() {
     releaseMapCollision(arena_, mapCol_);
     mapCol_ = nullptr;
     mapLoaded_ = false;
+    mapFloorZ_ = 0.0f;               // back on the default arena floor
     mapGen_++;
     session_ = 0;
     map_ = maploader::MapData();

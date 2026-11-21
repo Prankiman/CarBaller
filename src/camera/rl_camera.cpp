@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace {
 
@@ -23,7 +24,16 @@ float carPitch(const SimSnapshot& s) { return std::asin(clampf(s.carF.z, -1, 1))
 
 // turball clamps the eye to y = 10 (its world floor). CarBaller's custom maps
 // put their floor anywhere, so lift the clamp to the loaded map's floor.
+//
+// The tracked floor is the last surface the car stood on, which on a rings map
+// can be a checkpoint platform far above the course (and survives a session
+// reset). Clamping the eye to it after the car has dropped below would pin the
+// camera to a platform it left behind, so below that surface the clamp is
+// abandoned and the camera follows the car down.
 float eyeFloor(const SimSnapshot& s) {
+    constexpr float kUnderFloorSlack = 20.0f;
+    if (s.hasMapFloor && s.carPos.z < s.floorZ - kUnderFloorSlack)
+        return -std::numeric_limits<float>::infinity();
     return (s.hasMapFloor ? s.floorZ : 0.0f) + 10.0f;
 }
 
@@ -67,6 +77,7 @@ struct RLCamera::Core {
     V3 followHeight_{0, 0, 0};
     V3 targetHeight_{0, 0, 0};
     V3 pivot_{0, 0, 0};
+    V3 previousPivot_{0, 0, 0};
     V3 baseDirection_{1, 0, 0};
     V3 previousCarPosition_{0, 0, 0};
 
@@ -213,7 +224,14 @@ struct RLCamera::Core {
                 // Aim the car cam at the pivot from where it was, blended in
                 // by speed: the faster you fly, the more the camera tracks
                 // along the travel direction instead of the nose.
-                const V3 at = pivot_ - previousCameraPosition_;
+                V3 at = pivot_ - previousCameraPosition_;
+                // Drop the pivot's vertical motion from the aim. Taking the
+                // frame's full translation feeds a climb/dive back into the
+                // pitch every frame, tilting the view further and further
+                // toward straight down/up; near vertical the aim's horizontal
+                // component vanishes and the bearing whips around. Horizontal
+                // travel still swings the camera behind the car.
+                at.z -= pivot_.z - previousPivot_.z;
                 const float atHoriz = at.len2d();
                 const float Jp = std::atan2(at.z, atHoriz);
                 const float Ib = atHoriz > 1e-6f ? std::atan2(at.y, at.x) : bearing_;
@@ -262,6 +280,7 @@ struct RLCamera::Core {
         previousCameraPosition_.z =
             std::max(previousCameraPosition_.z, eyeFloor(s));
         previousCarPosition_ = s.carPos;
+        previousPivot_ = pivot_;
         initialized_ = true;
 
         // ---- camera roll: 10% of the car's roll while planted, decaying with

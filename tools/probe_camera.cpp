@@ -12,6 +12,9 @@
 //   * swivel offsets the view, then recenters faster than it moved out
 //   * ground roll banks the camera up-vector ~10% of the car's roll, and the
 //     bank decays in the air
+//   * a sustained fast dive keeps the car cam level instead of tilting it
+//     toward straight down, and a tracked map floor left above the car does
+//     not pin the eye to it (rings maps)
 //
 // Build (from repo root):
 //   c++ -std=c++20 -O2 -I. -Isrc -Ithird_party tools/probe_camera.cpp \
@@ -319,7 +322,76 @@ int main() {
               "ground roll banks ~10% of the car's roll, then decays", buf);
     }
 
-    // ---- 9. long chaotic trace: finite poses, sane distance to the car
+    // ---- 9. a sustained fast dive must not tilt the car cam straight down
+    // (and the bearing must stay put once the aim goes near-vertical)
+    {
+        RLCamera cam;
+        SimSnapshot s = makeSnap(V3(0, 0, 6000), level, V3(20000, 0, 100),
+                                 V3(0, 0, -2000), false);
+        cam.reset(s, cs);
+        cam.setMode(CamMode::Car);
+        step(cam, cs, s, 1);
+        const float basePitch = std::asin(clampf(dirOf(cam).z, -1, 1));
+        const float baseYaw = horizYaw(dirOf(cam));
+        float worstPitch = 0, worstYaw = 0;
+        for (int i = 0; i < 120; i++) {               // 2 s, 4000 uu of fall
+            s.carPos.z -= 2000.0f * kDt;
+            s.carVel = V3(0, 0, -2000);
+            s.onGround = false;
+            cam.update(kDt, cs, s, 0, 0);
+            const V3 d = dirOf(cam);
+            worstPitch = std::max(worstPitch,
+                                  std::fabs(deg(std::asin(clampf(d.z, -1, 1))) -
+                                            deg(basePitch)));
+            worstYaw = std::max(worstYaw, std::fabs(deg(wrap(horizYaw(d) - baseYaw))));
+        }
+        char buf[160];
+        std::snprintf(buf, sizeof buf,
+                      "pitch drift %.1f deg, yaw drift %.1f deg, eye z %.0f",
+                      worstPitch, worstYaw, cam.eye.z);
+        check(worstPitch < 8.0f && worstYaw < 5.0f && finite(cam.eye),
+              "fast sustained dive keeps the car cam level", buf);
+    }
+
+    // ---- 10. a map floor left above the car must not pin the eye to it
+    {
+        RLCamera cam;
+        SimSnapshot s = makeSnap(V3(0, 0, 6000), level, V3(20000, 0, 100),
+                                 V3(0, 0, -1500), false);
+        s.hasMapFloor = true;
+        s.floorZ = 5000.0f;                        // platform the car dropped off
+        cam.reset(s, cs);
+        cam.setMode(CamMode::Car);
+        for (int i = 0; i < 90; i++) {
+            s.carPos.z -= 1500.0f * kDt;
+            s.onGround = false;
+            cam.update(kDt, cs, s, 0, 0);
+        }
+        const float pitch = deg(std::asin(clampf(dirOf(cam).z, -1, 1)));
+        const float dist = (cam.eye - s.carPos).len();
+        char buf[160];
+        std::snprintf(buf, sizeof buf,
+                      "car z %.0f, floor %.0f, eye z %.0f, pitch %.1f, dist %.0f",
+                      s.carPos.z, s.floorZ, cam.eye.z, pitch, dist);
+        check(cam.eye.z < s.floorZ - 20.0f && pitch > -25.0f && dist < 600.0f,
+              "diving below the tracked map floor keeps following the car", buf);
+    }
+
+    // ---- 11. on the floor the eye clamp still keeps the camera above it
+    {
+        RLCamera cam;
+        SimSnapshot s = makeSnap(V3(0, 0, 17), level, V3(300, 0, 3000));
+        s.hasMapFloor = true;
+        s.floorZ = 0.0f;
+        cam.reset(s, cs);                          // ball cam: looking up at the ball
+        step(cam, cs, s, 180);
+        char buf[128];
+        std::snprintf(buf, sizeof buf, "eye z %.2f on a floor at 0", cam.eye.z);
+        check(cam.eye.z >= 9.5f && cam.eye.z < 11.0f,
+              "eye stays off the floor while looking up", buf);
+    }
+
+    // ---- 12. long chaotic trace: finite poses, sane distance to the car
     {
         RLCamera cam;
         SimSnapshot s = makeSnap(V3(0, 0, 17), level, V3(2000, 0, 300));
