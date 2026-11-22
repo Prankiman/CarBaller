@@ -152,6 +152,20 @@ bool Renderer::init(const std::string& meshDir, const std::string& modelDir,
     ok &= lit_.compile(LIT_VS, LIT_FS, "lit");
     ok &= unlit_.compile(UNLIT_VS, UNLIT_FS, "unlit");
     ok &= assets_.build(meshDir, modelDir, carBody);
+
+    // Aim-trainer board/target: unit quads in the local XY plane. The render
+    // pass places them on the vertical panel with a 90-degree X rotation.
+    {
+        MeshBuilder mb;
+        mb.quad(V3(-1, -1, 0), V3(1, -1, 0), V3(1, 1, 0), V3(-1, 1, 0),
+                Col(0.045f, 0.05f, 0.07f, 1.0f));
+        aimBoard_.upload(mb.verts, mb.idx);
+        mb.clear();
+        mb.quad(V3(-1, -1, 0), V3(1, -1, 0), V3(1, 1, 0), V3(-1, 1, 0),
+                Col(0.12f, 1.0f, 0.22f, 1.0f));
+        aimTarget_.upload(mb.verts, mb.idx);
+    }
+
     if (!ok) std::fprintf(stderr, "[renderer] init failed\n");
     return ok;
 }
@@ -171,6 +185,8 @@ void Renderer::shutdown() {
     particleMesh_.destroy();
     hitboxCar_.destroy();
     hitboxBall_.destroy();
+    aimBoard_.destroy();
+    aimTarget_.destroy();
     lit_.destroy();
     unlit_.destroy();
 }
@@ -502,6 +518,22 @@ void Renderer::render(const RLCamera& cam, const RenderParams& p, const Particle
                    M4::scale(V3(95, 95, 1));
             drawUnlit(assets_.shadowDisc, m, ballA, false);
         }
+    }
+
+    // ---------- built-in aim trainer: backboard-sized panel with the bright
+    // green target square. The panel is a separate physical collider in the
+    // sim; here it is just a flat dark face and the emissive target.
+    if (p.aim && p.aim->active && p.aim->boardHalfW > 0.0f) {
+        const M4 face = M4::rotateAxis(V3(1, 0, 0), 0.5f * (float)M_PI);
+        M4 board = M4::translate(p.aim->boardCenter) * face *
+                   M4::scale(V3(p.aim->boardHalfW, p.aim->boardHalfH, 1));
+        drawUnlit(aimBoard_, board, 1.0f, false);
+
+        const V3 tc(p.aim->targetCenter.x, p.aim->boardCenter.y - 2.0f,
+                    p.aim->targetCenter.z);
+        M4 target = M4::translate(tc) * face *
+                    M4::scale(V3(p.aim->targetHalf, p.aim->targetHalf, 1));
+        drawUnlit(aimTarget_, target, 1.0f, false);
     }
 
     if (p.showBallRing) {

@@ -3,6 +3,7 @@
 #include "../maploader/map_loader.h"
 
 #include "RocketSim/src/RocketSim.h"
+#include "RocketSim/libsrc/bullet3-3.24/BulletCollision/CollisionShapes/btBoxShape.h"
 
 #include <algorithm>
 #include <cmath>
@@ -37,6 +38,30 @@ static constexpr float kWheelReachBelowOrigin = 17.0f;
 // Slack on the ball test below: suspension travel + the ball's curvature at
 // the point where the wheels bite.
 static constexpr float kBallContactSlack = 12.0f;
+
+// --- built-in aim trainer geometry -----------------------------------------
+// The panel covers almost the whole end wall and hangs just in front of the
+// +Y backboard, so every shot that reaches the back of the arena lands on the
+// board. The ball drops from just below the ceiling a little over a quarter
+// pitch away; the car waits a little ahead of the field midpoint.
+static constexpr float kAimBoardHalfW = 3900.0f;       // 7800 of the 8192 wall
+static constexpr float kAimBoardHalfH = 950.0f;        // 1900 of the 2044 height
+static constexpr float kAimBoardCenterZ = 950.0f;      // panel spans floor..1900
+static constexpr float kAimPanelCenterY = 4920.0f;     // 200 uu in front of wall
+static constexpr float kAimPanelHalfT = 20.0f;
+static constexpr float kAimPanelFrontY = kAimPanelCenterY - kAimPanelHalfT;
+static constexpr float kAimBallY = 2300.0f;            // ~2600 from panel face
+static constexpr float kAimCarY = 240.0f;              // ~2 Octane lengths ahead of centre
+// Roughly 3.5x the ball's cross-sectional area (a touch under 4x): the ball's
+// cross-section is pi*91.25^2, a 300x300 square is ~3.44x that.
+static constexpr float kAimTargetHalf = 150.0f;
+static constexpr float kAimHitPause = 0.55f;
+static constexpr float kAimMissPause = 0.75f;
+static constexpr float kAimShotTimeout = 9.0f;
+static constexpr float kAimRestSpeed = 90.0f;          // uu/s
+static constexpr float kAimRestTime = 0.65f;           // seconds below rest speed
+static constexpr int kAimPanelGroup = 1;               // collides with car and ball
+static constexpr float kAimPad = 18.0f;                // target margin from panel edge
 
 // RocketSim tells us *that* the wheels found contact (isOnGround) but never
 // what they touched, so ask geometry: for a reset off the ball, the ball has
@@ -114,6 +139,8 @@ bool Sim::init(const std::string& meshDir, int carBody) {
 }
 
 void Sim::shutdown() {
+    // Remove the aim panel before the arena (and its Bullet world) goes away.
+    stopAimTrainer();
     // Map collision owns Bullet objects the arena references: hand them back
     // (and restore the arena's own collision) before the arena goes away.
     releaseMapCollision(arena_, mapCol_);
@@ -193,6 +220,9 @@ void Sim::stepOnce() {
     // Ball vs arena shell (floor/walls/ceiling). Runs first so the fresh
     // car-hit flag can suppress it: car impacts carry their own fx.
     detectSurfaceHit(freshCarHit);
+
+    // Aim trainer scoring rides on the same post-step state.
+    if (aim_.active) updateAimTrainer(freshCarHit);
 
     if (freshCarHit) {
         lastHitTick_ = hi.tickCountWhenHit;
@@ -457,6 +487,9 @@ bool Sim::applyMap(maploader::MapData&& data, std::string* err) {
 }
 
 void Sim::unloadMap() {
+    // A custom map and the aim trainer's own panel cannot coexist; loading or
+    // unloading a map always ends the aim session first.
+    if (aim_.active) stopAimTrainer();
     releaseMapCollision(arena_, mapCol_);
     mapCol_ = nullptr;
     mapLoaded_ = false;
@@ -587,4 +620,236 @@ void Sim::takePossession() {
 
 void Sim::applyControlSettings(const ControlSettings& cs) {
     if (car_) car_->config.dodgeDeadzone = clampf(cs.dodgeDeadzone, 0, 0.95f);
+}
+
+// ------------------------------------------------------------ aim trainer
+
+void Sim::startAimTrainer() {
+    if (!arena_ || !car_ || !arena_->ball) return;
+
+    // The aim panel only exists on the default arena: a loaded map owns the
+    // collision and the player's route.
+    if (mapLoaded_) unloadMap();
+
+    removeAimPanelCollision();
+    aim_.active = true;
+    aim_.streak = 0;
+    aim_.best = 0;
+    aim_.attempts = 0;
+    aim_.hits = 0;
+    aim_.lastResult = 0;
+    aim_.lastResultAge = 0;
+    aim_.resultDelay = 0;
+    aim_.boardCenter = V3(0, kAimPanelFrontY, kAimBoardCenterZ);
+    aim_.boardHalfW = kAimBoardHalfW;
+    aim_.boardHalfH = kAimBoardHalfH;
+    aim_.targetHalf = kAimTargetHalf;
+    aim_.ballSpawn = V3(0, kAimBallY, kShellCeilZ - ballR_ - 8.0f);
+
+    spawnAimTarget();
+    addAimPanelCollision();
+    beginAimAttempt(false);
+}
+
+void Sim::stopAimTrainer() {
+    if (!aim_.active && !aimPanelRB_) return;
+    removeAimPanelCollision();
+    aim_.active = false;
+    aim_.phase = 0;
+    aim_.lastResult = 0;
+    aim_.resultDelay = 0;
+    if (car_) resetShot(0);
+}
+
+void Sim::spawnAimTarget() {
+    const float xMax = kAimBoardHalfW - kAimTargetHalf - kAimPad;
+    const float zMin = kAimTargetHalf + kAimPad;
+    const float zMax = 2.0f * kAimBoardHalfH - kAimTargetHalf - kAimPad;
+    std::uniform_real_distribution<float> xr(-xMax, xMax);
+    std::uniform_real_distribution<float> zr(zMin, zMax);
+
+    // Avoid dropping the next target almost exactly on top of the old one:
+    // it is hard to tell a new attempt started when the square barely moved.
+    V3 next;
+    for (int tries = 0; tries < 8; tries++) {
+        next = V3(xr(aimRng_), kAimPanelFrontY, zr(aimRng_));
+        const float dx = next.x - aim_.targetCenter.x;
+        const float dz = next.z - aim_.targetCenter.z;
+        if (aim_.targetHalf <= 0.0f || dx * dx + dz * dz > 300.0f * 300.0f) break;
+    }
+    aim_.targetCenter = next;
+}
+
+void Sim::beginAimAttempt(bool newTarget) {
+    if (!arena_ || !car_ || !arena_->ball) return;
+    if (newTarget) spawnAimTarget();
+
+    aim_.phase = 0;
+    aim_.lastResult = 0;
+    aim_.lastResultAge = 0;
+    aim_.resultDelay = 0;
+    aimShotTime_ = 0;
+    aimRestTime_ = 0;
+
+    // Car: pitch centre, a little ahead of the field midpoint, facing the panel.
+    CarState s = car_->GetState();
+    s.pos = toVec(V3(0, kAimCarY, RLConst::CAR_SPAWN_REST_Z));
+    s.rotMat = Angle(0.5f * (float)M_PI, 0, 0).ToRotMat();
+    s.vel = Vec(0, 0, 0);
+    s.angVel = Vec(0, 0, 0);
+    s.flipRelTorque = Vec(0, 0, 0);
+    s.isOnGround = true;
+    s.hasJumped = false;
+    s.hasDoubleJumped = false;
+    s.hasFlipped = false;
+    s.isFlipping = false;
+    s.isJumping = false;
+    s.isAutoFlipping = false;
+    s.autoFlipTimer = 0;
+    s.jumpTime = 0;
+    s.flipTime = 0;
+    s.airTime = 0;
+    s.airTimeSinceJump = 0;
+    s.boost = 100;
+    s.isBoosting = false;
+    s.boostingTime = 0;
+    s.isDemoed = false;
+    s.isSupersonic = false;
+    s.supersonicTime = 0;
+    s.handbrakeVal = 0;
+    s.worldContact.hasContact = true;
+    s.worldContact.contactNormal = Vec(0, 0, 1);
+    car_->SetState(s);
+    car_->controls = CarControls();
+
+    // Ball: a clean drop from just under the ceiling at pitch centre.
+    BallState bs;
+    bs.pos = toVec(aim_.ballSpawn);
+    bs.rotMat = RotMat::GetIdentity();
+    // A tiny downward velocity both makes this a genuine drop and wakes the
+    // rigid body: SetState() only activates a ball whose velocity is nonzero.
+    bs.vel = Vec(0, 0, -1.0f);
+    bs.angVel = Vec(0, 0, 0);
+    arena_->ball->SetState(bs);
+    arena_->ball->_rigidBody.activate();
+
+    prevCar_ = curCar_ = car_->GetState();
+    prevBall_ = curBall_ = arena_->ball->GetState();
+    accum_ = 0;
+    lastSurfaceTick_ = ticksSimulated;
+    lastHitTick_ = ~0ULL;
+    flipResetHeld_ = false;
+    flipResetAge_ = 0;
+    if (onAimAttemptStart) onAimAttemptStart();
+}
+
+void Sim::resetAimAttempt(bool newTarget) {
+    if (!aim_.active) return;
+    // Abandoning a shot mid-flight is not a hit. Keep the trainer honest:
+    // it breaks the streak just like a shot that resolves as a miss.
+    if (aim_.phase == 1) aim_.streak = 0;
+    beginAimAttempt(newTarget);
+}
+
+void Sim::updateAimTrainer(bool carHitThisTick) {
+    if (!aim_.active) return;
+
+    if (aim_.phase == 2) {
+        aim_.lastResultAge += tickDt;
+        aim_.resultDelay -= tickDt;
+        if (aim_.resultDelay <= 0.0f)
+            beginAimAttempt(aim_.lastResult > 0);  // hit -> new target, miss -> retake
+        return;
+    }
+
+    if (aim_.phase == 0) {
+        // The drop itself does not count: the attempt only starts when the
+        // car actually touches the ball.
+        if (carHitThisTick) {
+            aim_.phase = 1;
+            aim_.attempts++;
+            aimShotTime_ = 0;
+            aimRestTime_ = 0;
+        }
+        return;
+    }
+
+    // ---- shot in flight
+    aimShotTime_ += tickDt;
+
+    const float R = ballR_;
+    const float curFront = curBall_.pos.y + R;
+    const float pX = curBall_.pos.x;
+    const float pZ = curBall_.pos.z;
+
+    // Panel contact: the ball was travelling toward +Y and is now touching
+    // the panel's front face. The panel is solid (see addAimPanelCollision),
+    // so Bullet has already stopped it there.
+    if (prevBall_.vel.y > 40.0f && curFront >= kAimPanelFrontY - 6.0f &&
+        std::fabs(pX) <= kAimBoardHalfW + R &&
+        pZ >= -R && pZ <= 2.0f * kAimBoardHalfH + R) {
+        const bool hit = std::fabs(pX - aim_.targetCenter.x) <= kAimTargetHalf &&
+                         std::fabs(pZ - aim_.targetCenter.z) <= kAimTargetHalf;
+        resolveAimShot(hit);
+        return;
+    }
+
+    // Anything that reaches the back wall (including the goal mouth) or a
+    // side/ceiling plane without crossing the target is a miss.
+    if (curBall_.pos.y + R >= kShellHalfY - 6.0f ||
+        std::fabs(curBall_.pos.x) + R >= kShellHalfX - 6.0f ||
+        curBall_.pos.z + R >= kShellCeilZ - 6.0f) {
+        resolveAimShot(false);
+        return;
+    }
+
+    // A shot that stops short, or simply takes far too long, is a miss.
+    if (curBall_.vel.Length() < kAimRestSpeed)
+        aimRestTime_ += tickDt;
+    else
+        aimRestTime_ = 0.0f;
+    if (aimRestTime_ > kAimRestTime || aimShotTime_ > kAimShotTimeout)
+        resolveAimShot(false);
+}
+
+void Sim::resolveAimShot(bool hit) {
+    if (!aim_.active || aim_.phase != 1) return;
+    aim_.phase = 2;
+    aim_.lastResult = hit ? 1 : -1;
+    aim_.lastResultAge = 0;
+    if (hit) {
+        aim_.streak++;
+        aim_.hits++;
+        if (aim_.streak > aim_.best) aim_.best = aim_.streak;
+        aim_.resultDelay = kAimHitPause;
+    } else {
+        aim_.streak = 0;
+        aim_.resultDelay = kAimMissPause;
+    }
+}
+
+void Sim::addAimPanelCollision() {
+    if (!arena_ || aimPanelRB_) return;
+    const float uuToBt = 1.0f / 50.0f;
+    aimPanelShape_ = new btBoxShape(btVector3(kAimBoardHalfW * uuToBt,
+                                              kAimPanelHalfT * uuToBt,
+                                              kAimBoardHalfH * uuToBt));
+    aimPanelRB_ = arena_->_AddStaticCollisionShape(
+        aimPanelShape_,
+        btVector3(0, kAimPanelCenterY * uuToBt, kAimBoardCenterZ * uuToBt),
+        kAimPanelGroup, /*mask=*/-1);
+}
+
+void Sim::removeAimPanelCollision() {
+    if (aimPanelRB_) {
+        if (arena_) {
+            arena_->_bulletWorld.removeRigidBody(aimPanelRB_);
+            std::vector<btRigidBody*>& owned = arena_->_worldCollisionRBs;
+            owned.erase(std::remove(owned.begin(), owned.end(), aimPanelRB_), owned.end());
+        }
+        delete aimPanelRB_;
+        aimPanelRB_ = nullptr;
+    }
+    delete aimPanelShape_;
+    aimPanelShape_ = nullptr;
 }

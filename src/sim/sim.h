@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <random>
 #include <string>
 
 struct SimSnapshot {
@@ -46,6 +47,32 @@ struct BallHitEvent {
 
 struct BallSurfaceHitEvent {
     float strength = 0;      // impact speed into the surface (uu/s)
+};
+
+// Built-in "Aim training" mode (after CoCo's workshop map): a bright-green
+// square target on a solid panel in front of the backboard. Every attempt
+// drops the ball from just below the ceiling at pitch centre; the car starts
+// a little ahead of midfield. A target hit extends the streak, a miss
+// resets it and re-arms the same target so the shot can be retaken.
+struct AimTrainerState {
+    bool active = false;
+    int streak = 0;
+    int best = 0;
+    int attempts = 0;          // shots that actually touched the ball
+    int hits = 0;
+    // 0 = ball dropping / waiting for the first car touch
+    // 1 = shot in flight (score can still be decided)
+    // 2 = short result pause before the next attempt is set up
+    int phase = 0;
+    int lastResult = 0;        // 1 = hit, -1 = miss, 0 = none yet
+    float lastResultAge = 0;   // seconds since the result
+    float resultDelay = 0;     // seconds left in the result pause
+    V3 targetCenter;           // on the panel's front face (world space)
+    float targetHalf = 0;      // target square half-size (uu)
+    V3 boardCenter;            // panel front face centre (world space)
+    float boardHalfW = 0;
+    float boardHalfH = 0;
+    V3 ballSpawn;
 };
 
 class Sim {
@@ -102,6 +129,22 @@ public:
 
     void applyControlSettings(const ControlSettings& cs);
 
+    // --- built-in aim trainer -------------------------------------------
+    // Starts / stops the target-panel mode. Starting drops any custom map and
+    // installs a solid panel in front of the backboard; stopping removes it
+    // and returns to the normal freeplay arena.
+    void startAimTrainer();
+    void stopAimTrainer();
+    bool aimActive() const { return aim_.active; }
+    const AimTrainerState& aimState() const { return aim_; }
+    // Re-arm the current attempt. newTarget=true rolls a fresh target square;
+    // false keeps the same one (used for retaking a missed shot).
+    void resetAimAttempt(bool newTarget);
+
+    // Called whenever a new aim attempt has been set up (car/ball teleport),
+    // so the app can snap the camera to the new spawn.
+    std::function<void()> onAimAttemptStart;
+
     // Called once per ball hit while stepping
     std::function<void(const BallHitEvent&)> onBallHit;
 
@@ -142,6 +185,14 @@ private:
     // Reset Shot can send car and ball back there.
     void updateSessionByProximity();
 
+    // Aim trainer helpers (see AimTrainerState above).
+    void beginAimAttempt(bool newTarget);
+    void spawnAimTarget();
+    void updateAimTrainer(bool carHitThisTick);
+    void resolveAimShot(bool hit);
+    void addAimPanelCollision();
+    void removeAimPanelCollision();
+
     RocketSim::Arena* arena_ = nullptr;
     RocketSim::Car* car_ = nullptr;
 
@@ -164,4 +215,12 @@ private:
     // Flip reset indicator state (drawn by the renderer, see stepOnce).
     bool flipResetHeld_ = false;
     float flipResetAge_ = 0;         // seconds, capped
+
+    // Built-in aim trainer state.
+    AimTrainerState aim_;
+    std::mt19937 aimRng_{std::random_device{}()};
+    float aimShotTime_ = 0;          // seconds since the shot was armed
+    float aimRestTime_ = 0;          // seconds the ball has been nearly still
+    btRigidBody* aimPanelRB_ = nullptr;
+    btCollisionShape* aimPanelShape_ = nullptr;
 };

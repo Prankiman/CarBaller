@@ -93,8 +93,9 @@ struct App {
     double nowSec = 0;
     double lastHitFx = -1.0;
 
-    // ---- custom maps
+    // ---- custom maps / built-in aim trainer
     MapTabState mapTab;
+    AimTabState aimTab;
     uint64_t rendererMapGen = 0;        // Sim::mapGen() the renderer last uploaded
     std::unique_ptr<MapJob> mapJob;     // parse in flight (worker thread)
     std::vector<Toast> toasts;          // top-right status/error messages
@@ -272,6 +273,7 @@ int runApp(int argc, char** argv) {
     if (std::getenv("CARBALLER_START_MAPTAB")) a.settingsUI.selectMapTab = true;
     if (const char* startMap = std::getenv("CARBALLER_START_MAP"))
         a.mapTab.loadRequest = startMap;  // picked up on the first frame
+    const bool startAim = std::getenv("CARBALLER_START_AIM") != nullptr;
 
     if (a.settings.gfx.msaa > 0) {
         SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
@@ -427,6 +429,11 @@ int runApp(int argc, char** argv) {
                   2.5);
     };
 
+    // Every aim attempt teleports the car back behind the ball: snap the
+    // camera rather than letting it swing across the whole pitch.
+    a.sim.onAimAttemptStart = [&a]() { a.camResetPending = true; };
+    if (startAim) a.sim.startAimTrainer();
+
     applyGraphics(a);
 
     // ---- main loop
@@ -499,17 +506,23 @@ int runApp(int argc, char** argv) {
             // Shot returns to the last checkpoint reached on a map (see
             // Sim::resetShot).
             const bool onMap = a.sim.hasMap();
+            const bool onAim = a.sim.aimActive();
             if (a.input.pressed(Action::LaunchBall)) {
-                if (onMap) {
+                if (onAim) {
+                    // Launch Ball / Take Possession are checkpoint keys on a
+                    // map; the aim trainer owns its own ball placement.
+                } else if (onMap) {
                     a.sim.cycleSession(-1);
                     a.camResetPending = true;
                 } else {
                     a.sim.launchBall(a.settings.freeplay);
                 }
             }
-            if (a.input.pressed(Action::Dribble)) a.sim.startDribble();
+            if (a.input.pressed(Action::Dribble) && !onAim) a.sim.startDribble();
             if (a.input.pressed(Action::TakePossession)) {
-                if (onMap) {
+                if (onAim) {
+                    // disabled while the trainer is active
+                } else if (onMap) {
                     a.sim.cycleSession(1);
                     a.camResetPending = true;
                 } else {
@@ -517,7 +530,10 @@ int runApp(int argc, char** argv) {
                 }
             }
             if (a.input.pressed(Action::ResetShot)) {
-                a.sim.resetShot(a.settings.freeplay.resetShotPreset);
+                if (onAim)
+                    a.sim.resetAimAttempt(false);   // retake the same target
+                else
+                    a.sim.resetShot(a.settings.freeplay.resetShotPreset);
                 a.camResetPending = true;
             }
         }
@@ -602,6 +618,35 @@ int runApp(int argc, char** argv) {
             a.camResetPending = true;
         }
         a.mapTab.cycleRequest = 0;
+
+        // ---- built-in aim trainer requests (Aim Trainer tab)
+        if (a.aimTab.startRequest) {
+            a.aimTab.startRequest = false;
+            a.sim.startAimTrainer();
+            a.camResetPending = true;
+            pushToast(a, "Aim Trainer: hit the green square", 3.0);
+        }
+        if (a.aimTab.stopRequest) {
+            a.aimTab.stopRequest = false;
+            a.sim.stopAimTrainer();
+            a.camResetPending = true;
+            pushToast(a, "Aim Trainer stopped", 2.5);
+        }
+        if (a.aimTab.resetRequest) {
+            a.aimTab.resetRequest = false;
+            if (a.sim.aimActive()) a.sim.resetAimAttempt(false);
+            a.camResetPending = true;
+        }
+
+        // what the Aim Trainer tab shows
+        {
+            const AimTrainerState& as = a.sim.aimState();
+            a.aimTab.active = as.active;
+            a.aimTab.streak = as.streak;
+            a.aimTab.best = as.best;
+            a.aimTab.attempts = as.attempts;
+            a.aimTab.hits = as.hits;
+        }
 
         // what the Map tab shows
         a.mapTab.loaded = a.sim.hasMap();
@@ -796,6 +841,7 @@ int runApp(int argc, char** argv) {
         rp.showHitboxes = a.settings.gfx.showHitboxes;
         rp.showFlipReset = a.settings.cam.flipResetIndicator;
         rp.wallOpacity = a.settings.gfx.wallOpacity;
+        rp.aim = &a.sim.aimState();
         a.renderer.render(a.cam, rp, a.particles);
 
         // ---------------- self-test telemetry
@@ -918,7 +964,7 @@ int runApp(int argc, char** argv) {
             ImGui::End();
 
             bool pOpen = true;
-            if (a.settingsUI.draw(a.settings, a.input, &pOpen, a.mapTab)) {
+            if (a.settingsUI.draw(a.settings, a.input, &pOpen, a.mapTab, a.aimTab)) {
                 a.needSave = true;
                 a.sim.applyControlSettings(a.settings.ctrl);
                 applyGraphics(a);

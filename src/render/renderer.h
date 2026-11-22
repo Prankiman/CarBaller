@@ -18,6 +18,7 @@ struct RenderParams {
     bool showHitboxes = false;     // outline car/ball physics hitboxes
     bool showFlipReset = true;     // RL's flip reset disc under the car
     float wallOpacity = 1.0f;   // 0..1 shell opacity when camera is outside
+    const AimTrainerState* aim = nullptr;  // built-in aim trainer panel/target
 };
 
 class Renderer {
@@ -78,5 +79,6 @@ private:
 
     GpuMesh particleMesh_;
     GpuMesh hitboxCar_, hitboxBall_;
+    GpuMesh aimBoard_, aimTarget_;   // unit quads; scaled/placed per frame
     float wheelSpin_ = 0;
 };

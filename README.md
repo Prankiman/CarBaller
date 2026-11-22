@@ -24,6 +24,14 @@ game.
   mode, Take Possession (drop the ball right in front of your car), Reset
   Shot presets (kickoff corners, midfield, aerial drop, goal line) and a
   0–150% game speed slider.
+- **Aim Trainer** — a built-in recreation of CoCo's *Aim training* normal mode
+  (**Settings → Aim Trainer**). A bright-green square target sits on a solid
+  panel covering almost the whole end wall; the ball drops from just below the
+  ceiling a little over a quarter pitch away and you start just ahead of
+  midfield. Hitting the square extends your streak, a miss
+  resets it to zero and respawns the same target so you can retake the shot.
+  Target hits and misses are tracked with best streak and accuracy, and the
+  mode works on the default arena (loading it unloads any custom map).
 - **Flip reset indicator** — Rocket League's glowing hollow disc under the
   car's underside while you're holding a reset taken off the ball: it flashes
   when your wheels plant mid-air and stays lit until you use the flip or land.
@@ -162,7 +170,9 @@ With a custom map loaded (**Settings → Map**) the last four actions change
 meaning: **Launch Ball** and **Take Possession** step to the previous / next
 checkpoint (car and ball teleport there), and **Reset Shot** returns to the
 current one — whether you drove into it or stepped to it with those keys. On
-the default arena they keep the behaviour shown above.
+the default arena they keep the behaviour shown above. With the **Aim Trainer**
+active, **Reset Shot** re-arms the current attempt on the same target, while
+Launch Ball, Dribble and Take Possession are disabled.
 
 ## Configuration
 

@@ -25,11 +25,26 @@ struct MapTabState {
     std::string error;           // most recent load failure
 };
 
+// State shared between the Aim Trainer tab and the app loop. Like the Map tab,
+// the UI only sets one-shot requests; app.cpp starts/stops the mode in the sim.
+struct AimTabState {
+    bool startRequest = false;
+    bool stopRequest = false;
+    bool resetRequest = false;   // re-arm the current shot (same target)
+
+    bool active = false;
+    int streak = 0;
+    int best = 0;
+    int attempts = 0;
+    int hits = 0;
+};
+
 class SettingsUI {
 public:
     // Draws the settings window. Returns true if any setting value changed
     // (caller should re-apply things like vsync, and save).
-    bool draw(Settings& settings, InputSystem& input, bool* pOpen, MapTabState& map);
+    bool draw(Settings& settings, InputSystem& input, bool* pOpen, MapTabState& map,
+              AimTabState& aim);
 
     // True while a right-click "type a value" popup is showing, as of the
     // most recent draw(). app.cpp holds the menu's Escape while this is set,

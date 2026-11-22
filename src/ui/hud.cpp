@@ -69,6 +69,44 @@ void checkpointMarkers(ImDrawList* dl, ImFont* font, const Renderer& renderer, c
     dl->AddText(ImVec2(sx - ts.x * 0.5f, sy + (onScreen ? 17.0f : 11.0f)), orange, buf);
 }
 
+// Built-in aim trainer: streak board at the top centre, with a short HIT/MISS
+// flash while the next attempt is being set up.
+void aimTrainerHud(ImDrawList* dl, ImFont* font, const AimTrainerState& a, int w) {
+    if (!a.active) return;
+
+    char streak[32];
+    std::snprintf(streak, sizeof streak, "%d", a.streak);
+    char sub[96];
+    const int acc = a.attempts > 0 ? (a.hits * 100 + a.attempts / 2) / a.attempts : 0;
+    std::snprintf(sub, sizeof sub, "BEST %d     HITS %d/%d     %d%%", a.best, a.hits,
+                  a.attempts, acc);
+
+    const float cx = float(w) * 0.5f;
+    const ImU32 green = col4(80, 255, 105, 240);
+    const ImU32 dim = col4(205, 215, 230, 190);
+
+    // board
+    dl->AddRectFilled(ImVec2(cx - 150.0f, 12.0f), ImVec2(cx + 150.0f, 104.0f),
+                      col4(8, 12, 16, 185), 10.0f);
+    dl->AddRect(ImVec2(cx - 150.0f, 12.0f), ImVec2(cx + 150.0f, 104.0f),
+                col4(80, 255, 105, 70), 10.0f, 0, 1.5f);
+
+    auto centered = [&](const char* text, float size, float y, ImU32 c) {
+        const ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+        dl->AddText(font, size, ImVec2(cx - ts.x * 0.5f, y), c, text);
+    };
+    centered("AIM TRAINER", 13.0f, 20.0f, green);
+    centered(streak, 38.0f, 34.0f, col4(255, 255, 255, 245));
+    centered(sub, 13.0f, 80.0f, dim);
+
+    if (a.lastResult != 0 && a.lastResultAge < 0.55f) {
+        const char* text = a.lastResult > 0 ? "HIT!" : "MISS";
+        const ImU32 c = a.lastResult > 0 ? green : col4(255, 85, 75, 240);
+        const ImVec2 ts = font->CalcTextSizeA(34.0f, FLT_MAX, 0.0f, text);
+        dl->AddText(font, 34.0f, ImVec2(cx - ts.x * 0.5f, 124.0f), c, text);
+    }
+}
+
 }  // namespace
 
 void HUD::draw(const SimSnapshot& snap, const RLCamera& cam, const Renderer& renderer,
@@ -80,6 +118,9 @@ void HUD::draw(const SimSnapshot& snap, const RLCamera& cam, const Renderer& ren
 
     // ---------------- map checkpoints (only when a custom map is loaded)
     checkpointMarkers(dl, font, renderer, sim, snap, w, h);
+
+    // ---------------- aim trainer streak board
+    aimTrainerHud(dl, font, sim.aimState(), w);
 
     // ---------------- boost gauge (bottom right)
     {

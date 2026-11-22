@@ -416,6 +416,47 @@ void drawFreeplayTab(FreeplaySettings& f, bool& changed, bool& entryOpen) {
     f.resetShotPreset = preset;
 }
 
+void drawAimTab(AimTabState& aim, bool mapLoaded) {
+    ImGui::TextWrapped(
+        "CoCo's Aim training, normal mode: a bright-green square target sits on "
+        "a solid panel that covers almost the whole end wall. A ball drops from "
+        "just under the ceiling a little over a quarter pitch away, and you "
+        "start just ahead of midfield.");
+    ImGui::TextWrapped(
+        "Hit the green square to extend your streak. A miss resets the streak "
+        "to 0 and respawns the SAME target so you can retake the shot.");
+
+    ImGui::Separator();
+
+    if (aim.active) {
+        ImGui::TextColored(ImVec4(0.45f, 1.0f, 0.45f, 1.0f), "Aim Trainer active");
+        ImGui::Text("Streak: %d", aim.streak);
+        ImGui::SameLine(150.0f);
+        ImGui::Text("Best: %d", aim.best);
+        ImGui::Text("Hits: %d / %d", aim.hits, aim.attempts);
+        ImGui::SameLine(150.0f);
+        const int acc = aim.attempts > 0 ? (aim.hits * 100 + aim.attempts / 2) / aim.attempts : 0;
+        ImGui::Text("Accuracy: %d%%", acc);
+
+        if (ImGui::Button("Retake Current Shot")) aim.resetRequest = true;
+        ImGui::SameLine();
+        if (ImGui::Button("Stop / Back to Freeplay")) aim.stopRequest = true;
+    } else {
+        if (ImGui::Button("Start Aim Trainer")) aim.startRequest = true;
+        ImGui::SameLine();
+        ImGui::TextDisabled("Target stays the same after a miss.");
+    }
+
+    if (mapLoaded && !aim.active)
+        ImGui::TextDisabled("Starting will unload the current custom map.");
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Controls");
+    ImGui::BulletText("Drive, boost and hit the ball into the green square.");
+    ImGui::BulletText("Reset Shot re-arms the current attempt.");
+    ImGui::BulletText("Launch Ball / Take Possession are disabled while active.");
+}
+
 void drawGarageTab(FreeplaySettings& f, bool& changed, bool& entryOpen) {
     static const char* kCarBodies[] = {"Fennec (Octane hitbox)", "Dominus"};
     int car = f.carBody;
@@ -661,7 +702,8 @@ void drawResetTab(Settings& settings, InputSystem& input, bool& changed) {
 
 // ------------------------------------------------------------------------ draw
 
-bool SettingsUI::draw(Settings& settings, InputSystem& input, bool* pOpen, MapTabState& map) {
+bool SettingsUI::draw(Settings& settings, InputSystem& input, bool* pOpen, MapTabState& map,
+                      AimTabState& aim) {
     anyChanged = false;
     bool& changed = anyChanged;
     // Recomputed every frame by whichever popup is up, so a closed menu or a
@@ -697,6 +739,12 @@ bool SettingsUI::draw(Settings& settings, InputSystem& input, bool* pOpen, MapTa
         if (ImGui::BeginTabItem("Freeplay")) {
             ImGui::PushID("Freeplay");
             drawFreeplayTab(settings.freeplay, changed, entryOpen);
+            ImGui::PopID();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Aim Trainer")) {
+            ImGui::PushID("Aim Trainer");
+            drawAimTab(aim, map.loaded);
             ImGui::PopID();
             ImGui::EndTabItem();
         }
