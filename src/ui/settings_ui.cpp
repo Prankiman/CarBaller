@@ -469,6 +469,11 @@ void drawGarageTab(FreeplaySettings& f, bool& changed, bool& entryOpen) {
 
 void drawToolsTab(MiscSettings& m, bool& changed, bool& entryOpen) {
     (void)entryOpen;
+    ImGui::SeparatorText("Performance");
+    check("Show FPS Counter", &m.showFps, changed,
+          "Show a small frame-rate readout in the top-right corner while you "
+          "play. The full stats overlay (F3) keeps its own FPS line.");
+
     ImGui::SeparatorText("Joystick Visualization");
     check("Show Visualization", &m.stickOverlay, changed,
           "BakkesMod-style joystick visualization (bakkesplugins.com/plugin/516) "

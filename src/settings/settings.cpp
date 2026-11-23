@@ -153,6 +153,7 @@ bool Settings::save(const std::string& path) const {
         {"stickOverlay", misc.stickOverlay},
         {"stickTrail", misc.stickTrail},
         {"stickOverlaySize", misc.stickOverlaySize},
+        {"showFps", misc.showFps},
     };
 
     json jb;
@@ -239,6 +240,7 @@ bool Settings::load(const std::string& path) {
         misc.stickOverlay = c.value("stickOverlay", misc.stickOverlay);
         misc.stickTrail = c.value("stickTrail", misc.stickTrail);
         misc.stickOverlaySize = c.value("stickOverlaySize", misc.stickOverlaySize);
+        misc.showFps = c.value("showFps", misc.showFps);
         misc.stickTrail = std::max(20, std::min(400, misc.stickTrail));
         misc.stickOverlaySize = std::max(150, std::min(600, misc.stickOverlaySize));
     }

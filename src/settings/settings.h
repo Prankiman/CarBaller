@@ -125,6 +125,7 @@ struct MiscSettings {
     bool stickOverlay = false;   // BakkesMod-style left-stick trail overlay
     int stickTrail = 180;        // samples shown (sampled at 120 Hz)
     int stickOverlaySize = 300;  // overlay square size in pixels
+    bool showFps = false;        // small frame-rate counter in the top-right
 };
 
 struct Settings {

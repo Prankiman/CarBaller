@@ -183,6 +183,18 @@ void HUD::draw(const SimSnapshot& snap, const RLCamera& cam, const Renderer& ren
         }
     }
 
+    // ---------------- FPS counter (Settings > Tools)
+    if (settings.misc.showFps) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "FPS %.0f", fps);
+        const float fs = ImGui::GetFontSize();
+        ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, buf);
+        ImVec2 pos(float(w) - ts.x - 16.0f, 12.0f);
+        dl->AddText(font, fs, ImVec2(pos.x + 1.0f, pos.y + 1.0f),
+                    IM_COL32(0, 0, 0, 170), buf);
+        dl->AddText(font, fs, pos, IM_COL32(210, 230, 255, 220), buf);
+    }
+
     // ---------------- stats
     if (statsVisible) {
         char buf[256];
