@@ -39,6 +39,11 @@ game.
   Settings → Camera).
 - **See-through walls** — walls and ceiling stay glassy like RL, with a Wall
   Opacity slider (invisible → solid).
+- **Training overlays** — **Settings → Tools** adds a hot-pink ball target
+  circle at any latitude (equator down to a dot at the south pole), with an
+  optional hit marker at the same level that flashes green for low ball
+  contacts and red for high ones, an optional FPS counter, and the joystick
+  visualization overlay.
 - **Full rebinding UI** — keyboard, mouse and gamepad, including individual
   left/right stick directions.
 - **Fennec body** — the printable [Thingiverse Fennec][fennec-thing] on the real

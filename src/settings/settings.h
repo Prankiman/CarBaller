@@ -126,6 +126,9 @@ struct MiscSettings {
     int stickTrail = 180;        // samples shown (sampled at 120 Hz)
     int stickOverlaySize = 300;  // overlay square size in pixels
     bool showFps = false;        // small frame-rate counter in the top-right
+    bool ballTargetArea = false; // hot-pink latitude ring around the ball
+    float ballTargetY = 0.0f;    // -1 = south pole, 0 = equator, +1 = north pole
+    bool hitMarker = true;       // cross at ball contacts, using ballTargetY
 };
 
 struct Settings {

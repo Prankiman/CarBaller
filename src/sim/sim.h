@@ -37,6 +37,11 @@ struct SimSnapshot {
     bool ballHitValid = false;
     V3 ballHitPos;
     float ballHitStrength = 0;    // |extraHitVel| (uu/s)
+    // Hit-marker tool: where the car last touched the ball and how far up the
+    // ball that contact sat (-1 = south pole, 0 = equator, +1 = north pole).
+    V3 ballHitContact;
+    float ballHitY = 0;
+    float ballHitAge = 999.0f;    // seconds since the contact
 };
 
 struct BallHitEvent {
@@ -209,6 +214,7 @@ private:
 
     double accum_ = 0;
     uint64_t lastHitTick_ = ~0ULL;
+    float ballHitAge_ = 999.0f;      // seconds since the last car-ball contact
     uint64_t lastSurfaceTick_ = 0;   // thud cooldown (~67 ms)
     float ballR_ = 91.25f;           // soccar ball radius, set in init()
 

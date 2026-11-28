@@ -469,6 +469,32 @@ void drawGarageTab(FreeplaySettings& f, bool& changed, bool& entryOpen) {
 
 void drawToolsTab(MiscSettings& m, bool& changed, bool& entryOpen) {
     (void)entryOpen;
+    ImGui::SeparatorText("Ball Target Area");
+    check("Show Circle", &m.ballTargetArea, changed,
+          "Draw a hot-pink latitude circle around the ball at the chosen "
+          "height. The near half is solid and the far half is dimmed, so the "
+          "ring reads as wrapping the ball.");
+    ImGui::BeginDisabled(!m.ballTargetArea);
+    sliderF("Y Level", &m.ballTargetY, -1.0f, 1.0f, "%.2f", changed, entryOpen,
+            "Height of the circle as a fraction of the ball radius. "
+            "0 = equator, -1 = south pole (a dot), +1 = north pole.");
+    if (std::fabs(m.ballTargetY) < 0.005f)
+        ImGui::TextDisabled("Equator");
+    else if (m.ballTargetY <= -0.995f)
+        ImGui::TextDisabled("South pole (dot)");
+    else if (m.ballTargetY >= 0.995f)
+        ImGui::TextDisabled("North pole (dot)");
+    else
+        ImGui::TextDisabled("%.0f%% of the radius %s the equator",
+                            std::fabs(m.ballTargetY) * 100.0f,
+                            m.ballTargetY < 0.0f ? "below" : "above");
+    check("Show Hit Marker", &m.hitMarker, changed,
+          "Flash a cross where the car touches the ball. Contacts below the "
+          "circle's Y level are green; contacts at or above it are red. The "
+          "marker belongs to the ring tool and only appears while the circle "
+          "is shown.");
+    ImGui::EndDisabled();
+
     ImGui::SeparatorText("Performance");
     check("Show FPS Counter", &m.showFps, changed,
           "Show a small frame-rate readout in the top-right corner while you "

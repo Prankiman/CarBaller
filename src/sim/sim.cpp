@@ -216,6 +216,7 @@ void Sim::stepOnce() {
 
     const BallHitInfo& hi = curCar_.ballHitInfo;
     const bool freshCarHit = hi.isValid && hi.tickCountWhenHit != lastHitTick_;
+    ballHitAge_ = freshCarHit ? 0.0f : std::min(ballHitAge_ + tickDt, 60.0f);
 
     // Ball vs arena shell (floor/walls/ceiling). Runs first so the fresh
     // car-hit flag can suppress it: car impacts carry their own fx.
@@ -314,9 +315,18 @@ SimSnapshot Sim::snapshot(float alpha) const {
 
     const BallHitInfo& hi = curCar_.ballHitInfo;
     s.ballHitValid = hi.isValid && hi.tickCountWhenHit == lastHitTick_;
+    s.ballHitAge = ballHitAge_;
     if (s.ballHitValid) {
         s.ballHitPos = toV3(hi.ballPos);
         s.ballHitStrength = hi.extraHitVel.Length();
+    }
+    if (hi.isValid) {
+        // relativePosOnBall is in ball-local space; rotate it by the rendered
+        // ball's interpolated frame to get the world-space contact point.
+        const Vec& rp = hi.relativePosOnBall;
+        const V3 rel = s.ballF * rp.x + s.ballR * rp.y + s.ballU * rp.z;
+        s.ballHitContact = s.ballPos + rel;
+        s.ballHitY = std::max(-1.0f, std::min(1.0f, rel.z / ballR_));
     }
     return s;
 }
@@ -428,6 +438,7 @@ void Sim::resetShot(int presetIndex) {
     flipResetHeld_ = false;
     flipResetAge_ = 0;
     lastSurfaceTick_ = ticksSimulated;   // the fresh ball drop is not an impact
+    ballHitAge_ = 999.0f;
 
     prevCar_ = curCar_ = car_->GetState();
     if (arena_ && arena_->ball) prevBall_ = curBall_ = arena_->ball->GetState();
@@ -738,6 +749,7 @@ void Sim::beginAimAttempt(bool newTarget) {
     accum_ = 0;
     lastSurfaceTick_ = ticksSimulated;
     lastHitTick_ = ~0ULL;
+    ballHitAge_ = 999.0f;
     flipResetHeld_ = false;
     flipResetAge_ = 0;
     if (onAimAttemptStart) onAimAttemptStart();

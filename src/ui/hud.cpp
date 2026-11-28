@@ -155,6 +155,78 @@ void HUD::draw(const SimSnapshot& snap, const RLCamera& cam, const Renderer& ren
                     IM_COL32(255, 255, 255, int(235 * alpha)), "BALL CAM");
     }
 
+    // ---------------- ball target area (Settings > Tools): a hot-pink
+    // latitude ring on the ball. The near half is solid; the far half is
+    // dimmed rather than depth-clipped so the whole circle stays readable.
+    if (settings.misc.ballTargetArea) {
+        constexpr float kBallR = GameAssets::kBallRadius;
+        const V3 c = snap.ballPos;
+        const float t = std::fmax(-1.0f, std::fmin(1.0f, settings.misc.ballTargetY));
+        const float zOff = t * kBallR;
+        const float ringR = kBallR * std::sqrt(std::fmax(0.0f, 1.0f - t * t));
+        const ImU32 nearCol = IM_COL32(255, 40, 160, 235);
+        const ImU32 farCol = IM_COL32(255, 40, 160, 70);
+
+        if (ringR < 2.0f) {
+            // At either pole the circle collapses to a dot.
+            float sx, sy;
+            if (renderer.project(V3(c.x, c.y, c.z + zOff), sx, sy))
+                dl->AddCircleFilled(ImVec2(sx, sy), 3.5f, nearCol, 12);
+        } else {
+            constexpr int kSegs = 64;
+            bool havePrev = false;
+            ImVec2 prev;
+            for (int i = 0; i <= kSegs; i++) {
+                const float a = 2.0f * (float)M_PI * float(i) / kSegs;
+                const V3 p(c.x + std::cos(a) * ringR,
+                           c.y + std::sin(a) * ringR,
+                           c.z + zOff);
+                float sx, sy;
+                const bool ok = renderer.project(p, sx, sy);
+                if (!ok) {
+                    havePrev = false;
+                    continue;
+                }
+                if (havePrev) {
+                    // Midpoint normal tells whether this segment is on the
+                    // hemisphere facing the camera.
+                    const float am = 2.0f * (float)M_PI * (float(i) - 0.5f) / kSegs;
+                    const V3 n(std::cos(am) * ringR, std::sin(am) * ringR, zOff);
+                    const float facing = n.x * (cam.eye.x - c.x) +
+                                         n.y * (cam.eye.y - c.y) +
+                                         n.z * (cam.eye.z - c.z);
+                    const bool near = facing >= 0.0f;
+                    dl->AddLine(prev, ImVec2(sx, sy), near ? nearCol : farCol,
+                                near ? 2.5f : 1.5f);
+                }
+                prev = ImVec2(sx, sy);
+                havePrev = true;
+            }
+        }
+    }
+
+    // ---------------- hit marker (same ring tool): a cross where the car
+    // touched the ball, green below the ring's Y level and red at/above it.
+    if (settings.misc.ballTargetArea && settings.misc.hitMarker) {
+        constexpr float kHitLife = 0.45f;
+        float sx, sy;
+        if (snap.ballHitAge < kHitLife &&
+            renderer.project(snap.ballHitContact, sx, sy)) {
+            const bool good = snap.ballHitY < settings.misc.ballTargetY;
+            const float fade = 1.0f - snap.ballHitAge / kHitLife;
+            const ImU32 col = good ? IM_COL32(60, 255, 120, int(255 * fade))
+                                   : IM_COL32(255, 60, 70, int(255 * fade));
+            const ImU32 shadow = IM_COL32(0, 0, 0, int(170 * fade));
+            const float s = 13.0f;
+            const ImVec2 a(sx - s, sy - s), b(sx + s, sy + s);
+            const ImVec2 c(sx - s, sy + s), d(sx + s, sy - s);
+            dl->AddLine(a, b, shadow, 6.0f);
+            dl->AddLine(c, d, shadow, 6.0f);
+            dl->AddLine(a, b, col, 3.0f);
+            dl->AddLine(c, d, col, 3.0f);
+        }
+    }
+
     // ---------------- car -> ball arrow (car cam only)
     if (settings.cam.ballArrow && cam.mode() == CamMode::Car) {
         float cx, cy, bx, by;
