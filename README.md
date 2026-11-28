@@ -118,6 +118,16 @@ vcpkg install sdl2:x64-windows glew:x64-windows
 
 ### Instructions (Linux / MSYS2)
 
+The helper script handles submodules, asset fetching, configuration and the
+build in one step:
+
+```bash
+./tools/build_linux.sh            # build into ./build
+./tools/build_linux.sh --test     # build, then run the headless self-test
+```
+
+The equivalent manual steps are:
+
 ```bash
 git clone --recurse-submodules <repository-url> carballer
 cd carballer
@@ -139,6 +149,14 @@ bash tools/fetch_assets.sh    # needs Git Bash on PATH (bash, curl, tar)
 cmake -B build "-DCMAKE_TOOLCHAIN_FILE=<vcpkg-root>\scripts\buildsystems\vcpkg.cmake"
 cmake --build build --config Release
 build\Release\carballer.exe
+```
+
+Or let the helper script do it (it finds vcpkg via `VCPKG_ROOT` or `PATH`,
+installs SDL2/GLEW if needed, and fetches the collision meshes):
+
+```powershell
+tools\build_windows.bat              # or: powershell -File tools\build_windows.ps1
+tools\build_windows.bat -Run         # build, then launch the game
 ```
 
 `<vcpkg-root>` is wherever vcpkg lives (e.g. `C:\vcpkg`).
